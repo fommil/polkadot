@@ -5,7 +5,10 @@
 
 `default_nettype none
 
-// Exact fixed-point floating point dot-product accumulator.
+// Exact dot-product accumulator, that uses fixed precision accumulation with a
+// single rounding at the end. Multiple rounding modes may be computed on the
+// same acculation (no need to provide the terms again) by setting rmode (even
+// with an unset valid flag).
 //
 // Specials are selected by OCP:
 //   OCP=0  IEEE 754 style. An all-ones exponent is reserved: mantissa zero is
@@ -16,192 +19,319 @@
 //          largest finite value has mantissa all-ones-minus-one (448 for
 //          E4M3). Overflow saturates to that value instead.
 //
-// ASSUMPTIONS:
-//   - Subnormal inputs supported, round to nearest ties to even on output.
-//   - Exact cancellation gives +0.
-//   - Accumulation is exact, the only rounding in the design is at the output.
-module polkadot #(
-    parameter integer EXP   = 4,  // exponent field bits
-    parameter integer SIG   = 4,  // significand bits, implicit bit INCLUDED
-    parameter integer GUARD = 8,  // headroom: 2**GUARD worst-case terms
-    parameter integer OCP   = 0   // 0: IEEE-style Inf/NaN, 1: OCP FP8 style
-) (
-    input  wire                 clk,
-    input  wire                 rst_n,  // active low, synchronous
-    input  wire                 clear,  // zero the accumulator and sticky flags
-    input  wire                 valid,  // accumulate a*b this cycle
-    input  wire [EXP+SIG-1:0]   a,
-    input  wire [EXP+SIG-1:0]   b,
-    output wire [EXP+SIG-1:0]   y       // round(sum of all a*b so far)
-);
+// A note on power consumption: it is recommended that callers hold a and b
+// steady even when valid is not set high, avoiding unnecessary work being
+// performed.
+//
+// The clear pin is only accepted with the valid input set, indicating that this
+// input starts a new dot product.
+//
+// We always emit a canonical NaN with a zero sign and throw away the payload of
+// any incoming NaN. This is allowed, since IEEE 754-2019 6.3 leaves the sign of
+// a NaN unspecified, 6.2 only recommends keeping the payload.
+module polkadot
+  #(
+    parameter integer EXP = 4,   // exponent field bits
+    parameter integer MAN = 3,   // significand bits, not including implicit bit
+    parameter integer GUARD = 0, // headroom: 2**GUARD worst-case terms
+    parameter integer OCP = 0    // 0: IEEE-style Inf/NaN, 1: OCP FP8 style
+    )
+   (
+    input wire              clk,
+    input wire              rst_n,     // active low, synchronous
+    input wire              clear,     // start a new accumulation (first cycle)
+    input wire              valid,     // accumulate a*b this cycle
+    input wire [2:0]        rmode,     // rounding mode, see RNE/RTZ below
+    input wire [EXP+MAN:0]  a,         // width = EXP + MAN + 1 (for sign)
+    input wire [EXP+MAN:0]  b,
+    output wire [EXP+MAN:0] y,         // round(sum of all a*b so far)
+    // debugging
+    output wire             inexact,   // y differs from the exact sum
+    output wire             underflow, // y is tiny and inexact
+    output wire             overflow,  // exact sum is too large to represent
+    output wire             invalid    // a NaN was introduced, not propagated
+    );
 
-  localparam integer MAN  = SIG - 1;          // stored mantissa bits
-  localparam integer W    = EXP + SIG;        // 1 sign + EXP + MAN
-  localparam integer BIAS = (1 << (EXP - 1)) - 1;
+   initial begin
+      if (MAN < 1) $fatal(1, "polkadot: MAN must be >= 1, got %0d", MAN);
+      if (EXP < 2) $fatal(1, "polkadot: EXP must be >= 2, got %0d", EXP);
+      if (GUARD < 0) $fatal(1, "polkadot: GUARD must be >= 0, got %0d", GUARD);
+   end
 
-  // Fixed point accumulator: INT bits above the point, FRAC below, one sign
-  // bit and GUARD bits of headroom. Products range over
-  // 2**(2-2*BIAS-2*MAN) .. <2**(2*BIAS+2).
-  localparam integer FRAC  = 2 * BIAS + 2 * MAN - 2;
-  localparam integer INT   = 2 * BIAS + 2;
-  localparam integer ACC_W = 1 + GUARD + INT + FRAC;
-  localparam integer MSB_W = $clog2(ACC_W);
+   // Rounding modes
+   //
+   // Giving this option is standard but it's quite costly to allow it to be
+   // swapped at runtime. If a caller has need of a particular fixed rounding
+   // mode, it can be best to bake it in at compile time, especially RTZ which
+   // is the simplest of all the rounding modes.
+   localparam RNE = 0; // nearest, ties to even
+   localparam RTZ = 1; // toward zero, i.e. plain truncation
+   // TODO RDN (010, toward -Inf)
+   // TODO RUP (011, toward +Inf)
+   // TODO RMM (100, nearest ties away from zero)
 
-  // Right shift that lands the accumulator's subnormal LSB on the output's,
-  // i.e. FRAC+1-BIAS-MAN. Always >= 1, so the round bit index never underflows.
-  localparam integer SUB_SHIFT = BIAS + MAN - 1;
-  // msb below this means the result is subnormal (or zero)
-  localparam integer SUB_MSB = MAN + SUB_SHIFT;
-  // biased exponent = msb - EOFF for normal results
-  localparam integer EOFF = FRAC - BIAS;
+   // An exp value of 0 indicates a subnormal; the implicit leading bit is 0.
+   // Its (unsigned) fixed point value is `mantissa * 2^(1-BIAS-MAN)`, with the
+   // smallest value being 2^(1-BIAS-MAN).
+   //
+   // A normal float has a non-zero exp and has an implicit leading bit of 1.
+   // sig here means the mantissa with the leading 1. The (unsigned) fixed point
+   // value is then shifted by sig << exp-1, i.e. the significand shifted
+   // towards the MSB by its exponent.
+   localparam integer SIG  = MAN + 1; // significand width with implicit bit
+   localparam integer BIAS = (1 << (EXP - 1)) - 1; // exp corresponding to unity 2^0
 
-  // ---------------------------------------------------------------- decode
-  // Split the input words into their raw bit fields, and classify them. No
-  // arithmetic interpretation yet.
+   // Multiplying two arbitrary precision numbers involves multiplying their
+   // integer portion and summing their exponential parts. Dot Product involves
+   // accumulating many such calculations.
+   //
+   // Floating point representations typically require branches to handle
+   // mismatched scales when accumulation, see Chapter 7.3 of Muller, and more
+   // advanced approaches use caching layers and/or MSB/LSB limits to reduce the
+   // size of the accumulator for high precisions.
+   //
+   // Our simplifying design choice is to accumulate exact fixed point values,
+   // and pay the full cost of the accumulator register and everything that
+   // comes with it.
+   //
+   // The width of the integer part is 2 * SIG significand bits (multiplied
+   // integer part), and the shift is a sum of each individual shift (i.e. 0 for
+   // subnormal, and exp-1 for normal), i.e. 2^EXP - 2 per incoming value.
+   // Summing gives 2 * (2^EXP - 2) = 2^(EXP+1) - 4. Note that IEEE reserves
+   // an exp value for Inf so treating it this way adds two extra guard bits.
+   //
+   // We account for SIGN and GUARD bits, giving us a total width of:
+   localparam integer ACC_W = 1 + GUARD + (2 * SIG) + ((1 << (EXP + 1)) - 4);
+   // and if we want to index into that, we need this many bits
+   localparam integer MSB_W = $clog2(ACC_W); // width of index into ACC_W
 
-  wire           sign_a = a[W-1];
-  wire [EXP-1:0] exp_a = a[W-2:MAN];
-  wire [MAN-1:0] man_a = a[MAN-1:0];
-  wire           sign_b = b[W-1];
-  wire [EXP-1:0] exp_b = b[W-2:MAN];
-  wire [MAN-1:0] man_b = b[MAN-1:0];
+   // Subnormals have exponent field 0, which decodes to unbiased exponent
+   // (1-BIAS). Every float is an integer multiple of the smallest subnormal
+   // 2^(-MAN) * 2^(1-BIAS) = 2^(1-BIAS-MAN).
+   //
+   // POINT is the index of the bit, counting from the LSB, that when set gives
+   // us 2^0 = 1.
+   localparam integer POINT = BIAS + MAN - 1;
+   // ACC_POINT is the same thing but for the accumulator, whose smallest
+   // magnitude is the square of the smallest subnormal: 2^(1-BIAS-MAN)^2 =
+   // 2^(2-2*BIAS-2*MAN). The bit width is double the width of POINT.
+   //
+   // Thus, a bit at index i has value 2^(i-ACC_POINT).
+   //
+   // Given a fixed point value with its msb at index i, we can compute the
+   // corresponding floating point (biased) exp value by subtracting ACC_POINT -
+   // BIAS.
+   localparam integer ACC_POINT = 2 * POINT;
 
-  wire a_zero = (exp_a == 0) && (man_a == 0);
-  wire b_zero = (exp_b == 0) && (man_b == 0);
-  // all-ones exponent code, reserved in IEEE mode but ordinary in OCP mode
-  wire a_top = (exp_a == {EXP{1'b1}});
-  wire b_top = (exp_b == {EXP{1'b1}});
-  wire a_nan = OCP ? (a_top && (man_a == {MAN{1'b1}})) : (a_top && (man_a != 0));
-  wire b_nan = OCP ? (b_top && (man_b == {MAN{1'b1}})) : (b_top && (man_b != 0));
-  wire a_inf = !OCP && a_top && (man_a == 0);
-  wire b_inf = !OCP && b_top && (man_b == 0);
-  // not a finite number, so it must bypass the accumulator
-  wire a_spec = a_nan || a_inf;
-  wire b_spec = b_nan || b_inf;
+   // The smallest normal float is 2^(1-BIAS), which sits at this accumulator
+   // bit index. Anything with its leading 1 below this is a subnormal (or zero)
+   // result and uses a fixed slice of the accumulator instead of a shift.
+   localparam integer NORM_LSB = ACC_POINT - BIAS + 1;
 
-  // ------------------------------------------------------------ term input
-  // Expand a*b into its exact fixed-point form. This is the heart of the
-  // design: `mag` (unsigned) / `term` (signed) is the product decoded into the
-  // accumulator's fixed-width representation, with no rounding whatsoever.
-  //
-  // SCALE CONVENTION: an accumulator integer N represents the real value
-  // N * 2**-FRAC, i.e. the binary point sits FRAC bits up from the LSB.
-  //
-  //   a*b   = prod * 2**(ea + eb - 2*BIAS - 2*MAN)
-  //   fixed = a*b * 2**FRAC                       (by the convention above)
-  //         = prod * 2**(ea + eb - 2)             (since FRAC = 2*BIAS+2*MAN-2)
-  //
-  // so the entire exponent calculation collapses to a left shift by ea+eb-2,
-  // which is 0 when both inputs are subnormal and never goes negative.
+   // route the parts of the input floats and detect NaN/Inf.
+   wire               sign_a = a[EXP+MAN];
+   wire [EXP-1:0]     exp_a = a[EXP+MAN-1:MAN];
+   wire [MAN-1:0]     man_a = a[MAN-1:0];
+   wire               sign_b = b[EXP+MAN];
+   wire [EXP-1:0]     exp_b = b[EXP+MAN-1:MAN];
+   wire [MAN-1:0]     man_b = b[MAN-1:0];
 
-  // implicit bit is 0 for subnormals, whose exponent is then treated as 1
-  wire [SIG-1:0] sig_a = {exp_a != 0, man_a};
-  wire [SIG-1:0] sig_b = {exp_b != 0, man_b};
-  wire [EXP:0] ea = (exp_a == 0) ? 1 : {1'b0, exp_a};
-  wire [EXP:0] eb = (exp_b == 0) ? 1 : {1'b0, exp_b};
+   // OCP NaN is all ones exponent and all ones mantissa (no Inf).
+   // IEEE uses all ones exponent with zero mantissa for Inf and non-zero for NaN.
+   //
+   // syntax reminder:
+   //
+   // ~|a = a is all 0
+   //  |a = a is non-zero
+   //  &a = a is all 1
+   wire               a_zero = ~|exp_a && ~|man_a;
+   wire               b_zero = ~|exp_b && ~|man_b;
+   wire               a_nan = OCP ? (&exp_a && &man_a) : (&exp_a && |man_a);
+   wire               b_nan = OCP ? (&exp_b && &man_b) : (&exp_b && |man_b);
+   wire               a_inf = OCP ? 1'b0 : (&exp_a && ~|man_a);
+   wire               b_inf = OCP ? 1'b0 : (&exp_b && ~|man_b);
 
-  // significand product, an integer of value prod * 2**(-2*MAN)
-  wire [2*SIG-1:0] prod = sig_a * sig_b;
-  // where prod lands on the fixed-point number line
-  wire [EXP:0] shamt = ea + eb - 2;
-  // |a*b| in fixed point, exactly, zero extended to the full accumulator width
-  wire [ACC_W-1:0] mag = {{(ACC_W - 2 * SIG) {1'b0}}, prod} << shamt;
-  wire term_sign = sign_a ^ sign_b;
-  wire signed [ACC_W-1:0] term = term_sign ? -$signed(mag) : $signed(mag);
+   // Expand a*b into its exact fixed-point form.
+   //
+   // construct the scale shift, being careful not to overflow
+   wire [EXP-1:0]     shift_a = ~|exp_a ? 1 : exp_a;
+   wire [EXP-1:0]     shift_b = ~|exp_b ? 1 : exp_b;
+   wire [EXP:0]       shift = shift_a + shift_b - 2; // single -2, instead of 2x -1
+   // add the implicit bit to the significands, and multiply
+   wire [MAN:0]       sig_a = {|exp_a, man_a};
+   wire [MAN:0]       sig_b = {|exp_b, man_b};
+   wire [2*SIG-1:0]   prod = sig_a * sig_b; // costly
+   wire [ACC_W-1:0]   prod_acc = prod;   // widen before shifting
+   wire [ACC_W-1:0]   mag = prod_acc << shift; // costly
+   // set the sign
+   wire               sign = sign_a ^ sign_b;
+   // term and acc are defined signed so that the sum handles negatives
+   wire signed [ACC_W-1:0] term = sign ? -mag : mag;
 
-  // specials never enter the accumulator, they go to the sticky flags
-  wire take = valid && !a_spec && !b_spec;
+   // State
+   //
+   // the dot product accumulator
+   reg signed [ACC_W-1:0]  acc;
+   // Sticky bits handle special flag pollution. Note that we need to track if
+   // everything was negative zero because -0 + -0 = -0.
+   reg                     nan_sticky, inf_pos_sticky, inf_neg_sticky, nzero_sticky;
+   // Set if a term introduced a NaN of its own, see invalid_in.
+   reg                     invalid_sticky;
+   // Set if the accumulator ever wrapped past the GUARD bits, see acc_ovf.
+   reg                     acc_sticky;
 
-  // the running fixed-point sum, the only real state in the datapath
-  reg signed [ACC_W-1:0] acc;
-  // clear in the same cycle as valid zeroes the sum but still takes the term
-  wire signed [ACC_W-1:0] base = clear ? {ACC_W{1'b0}} : acc;
+   // Table 7.4 from Muller shows Inf*0 is NaN, anything*NaN is also NaN.
+   // Everything else uses a standard sign rule, so -Inf*Inf=-Inf, -0*0=-0.
+   //
+   // Table 7.2 shows NaN+*=NaN, Inf-Inf=NaN, Inf+else=Inf
+   wire                    invalid_in = (a_inf && b_zero) || (b_inf && a_zero);
+   wire                    nan_in = a_nan || b_nan || invalid_in;
+   wire                    inf_in = !nan_in && (a_inf || b_inf);
+   wire                    nzero_in = (a_zero || b_zero) && sign;
 
-  always @(posedge clk) begin
-    if (!rst_n) acc <= {ACC_W{1'b0}};
-    else acc <= base + (take ? term : {ACC_W{1'b0}});
-  end
+   wire signed [ACC_W-1:0] acc_op = clear ? {ACC_W{1'b0}} : acc;
+   wire signed [ACC_W-1:0] acc_sum = acc_op + term; // costly
 
-  // --------------------------------------------------------- sticky specials
+   // detect possible overflows relative to the last state
+   wire                    acc_ovf = (acc_op[ACC_W-1] == term[ACC_W-1]) &&
+                           (acc_sum[ACC_W-1] != term[ACC_W-1]);
 
-  // Inf*0 is invalid, Inf*NaN is just NaN
-  wire nan_in = valid && (a_nan || b_nan || (a_inf && b_zero) || (b_inf && a_zero));
-  wire inf_in = valid && !nan_in && (a_inf || b_inf);
+   // update the acc(umulator) and sticky flags on rising edges
+   always @(posedge clk) begin
+      if (!rst_n) begin
+         acc <= 0;
+         nan_sticky <= 0;
+         inf_pos_sticky <= 0;
+         inf_neg_sticky <= 0;
+         nzero_sticky <= 0;
+         acc_sticky <= 0;
+         invalid_sticky <= 0;
+      end
+      else if (valid) begin
+         acc <= acc_sum;
+         acc_sticky <= (clear ? 0 : acc_sticky) || acc_ovf;
+         nan_sticky <= (clear ? 0 : nan_sticky) || nan_in;
+         inf_pos_sticky <= (clear ? 0 : inf_pos_sticky) || (inf_in && !sign);
+         inf_neg_sticky <= (clear ? 0 : inf_neg_sticky) || (inf_in && sign);
+         nzero_sticky <= (clear ? 1 : nzero_sticky) && nzero_in;
+         invalid_sticky <= (clear ? 0 : invalid_sticky) || invalid_in;
+      end
+   end
 
-  reg nan_sticky, inf_pos_sticky, inf_neg_sticky;
+   // Output
 
-  always @(posedge clk) begin
-    if (!rst_n) begin
-      nan_sticky <= 1'b0;
-      inf_pos_sticky <= 1'b0;
-      inf_neg_sticky <= 1'b0;
-    end else begin
-      nan_sticky <= (clear ? 1'b0 : nan_sticky) | nan_in;
-      inf_pos_sticky <= (clear ? 1'b0 : inf_pos_sticky) | (inf_in && !term_sign);
-      inf_neg_sticky <= (clear ? 1'b0 : inf_neg_sticky) | (inf_in && term_sign);
-    end
-  end
+   wire                    acc_neg = acc[ACC_W-1];
+   wire [ACC_W-1:0]        amag = acc_neg ? -acc : acc;
 
-  // ------------------------------------------------------- normalise + round
-  // Encode the fixed-point sum back into a float: find its magnitude's leading
-  // one to get the exponent, shift the significand down into SIG bits, and
-  // round to nearest, ties to even. This is the only rounding in the design.
+   // find the index of the leading 1.
+   //
+   // what we are really building here is a big switch/case encoder statement
+   // that looks like
+   //
+   // 1xxxxx => 1
+   // 01xxxx => 2
+   // 001xxx => 3
+   // ...
+   //
+   // which is then converted into gate logic and synthesized thanks to
+   // McCluskey et al.
+   reg [MSB_W-1:0]         msb;
+   integer                 i;
+   always @* begin
+      msb = {MSB_W{1'b0}};
+      for (i = 0; i < ACC_W; i = i + 1) if (amag[i]) msb = i[MSB_W-1:0];
+   end
 
-  // sign/magnitude split, so the shifts below are unsigned
-  wire acc_neg = acc[ACC_W-1];
-  wire [ACC_W-1:0] amag = acc_neg ? -acc : acc;
+   // truncate the exact form into MAN width
+   //
+   // check if normal or subnormal. amag = 0 (i.e. zero) counts as subnormal
+   wire                    is_norm = |amag[ACC_W-1:NORM_LSB];
+   wire [MAN-1:0]          man_norm = amag[msb-1 -: MAN];
+   wire [MAN-1:0]          man_sub = amag[NORM_LSB-1 -: MAN];
+   wire [MAN-1:0]          man_y = is_norm ? man_norm : man_sub;
 
-  // leading one detect, 0 when amag is zero (which then rounds to +0)
-  reg [MSB_W-1:0] msb;
-  integer i;
-  always @* begin
-    msb = {MSB_W{1'b0}};
-    for (i = 1; i < ACC_W; i = i + 1) if (amag[i]) msb = i[MSB_W-1:0];
-  end
+   // A bit at index i has value 2^(i-ACC_POINT), and a normal float with biased
+   // exp e has value 2^(e-BIAS), so e = msb - ACC_POINT + BIAS.
+   wire [MSB_W-1:0]        exp_norm = msb - (ACC_POINT - BIAS);
+   wire [MSB_W-1:0]        exp_y = is_norm ? exp_norm : 0;
 
-  wire subnorm = (msb < SUB_MSB);
-  // how far to shift amag right so its top bit lands at bit MAN of sig_pre;
-  // subnormal results instead use a fixed shift, so they lose precision
-  wire [MSB_W-1:0] s = subnorm ? SUB_SHIFT[MSB_W-1:0] : (msb - MAN);
+   // guard bit is the bit immediately below the truncated slice
+   wire [MSB_W-1:0]        guard_idx = is_norm ? msb - MAN - 1 : NORM_LSB - MAN - 1;
+   wire [ACC_W-1:0]        lo_mask = (1 << guard_idx) - 1;
+   wire                    guard_bit = amag[guard_idx];
+   // sticky bit is OR of everything strictly below the guard
+   wire                    sticky_bit = |(amag & lo_mask);
 
-  // the candidate significand, before rounding
-  wire [ACC_W-1:0] shifted = amag >> s;
-  wire [SIG-1:0] sig_pre = shifted[SIG-1:0];
+   // rounding
+   reg                     round_up;
+   always @* begin
+      case (rmode)
+        RNE: round_up = guard_bit && (sticky_bit || man_y[0]);
+        RTZ: round_up = 0;
+        default: round_up = 0;
+      endcase
+   end
 
-  // the discarded bits: amag[s-1] decides the tie, amag[s-2:0] breaks it
+   // Incrementing the concatenated {exp, man} field, rather than the mantissa
+   // alone, gets two carry cases for free: a normal mantissa overflow (1.1..1 +
+   // 1ulp = 10.0..0, i.e. exp+1 with mantissa 0) and the subnormal to normal
+   // transition (max subnormal + 1ulp = exp 1 with mantissa 0).
+   //
+   // The exponent is kept at full MSB_W width here (plus a carry bit) so that
+   // the overflow test below sees the true value rather than a wrapped one.
+   wire [MSB_W+MAN:0]      fields_full = {1'b0, exp_y, man_y} + round_up;
+   wire [MSB_W:0]          exp_full = fields_full[MSB_W+MAN:MAN];
+   wire [MAN-1:0]          man_full = fields_full[MAN-1:0];
 
-  wire [ACC_W-1:0] sticky_mask = ({{(ACC_W - 1) {1'b0}}, 1'b1} << (s - 1)) - 1'b1;
-  wire round_bit = amag[s-1];
-  wire sticky_bit = |(amag & sticky_mask);
-  wire round_up = round_bit && (sticky_bit || sig_pre[0]);
+   // overflow is reachable by rounding up from the largest finite value
+   localparam integer      EXP_MAX = (1 << EXP) - 1; // all ones exponent field
+   // largest finite biased exponent
+   localparam integer      EXP_FIN = OCP ? EXP_MAX : EXP_MAX - 1;
+   wire                    ovf = OCP
+                           ? (exp_full > EXP_MAX || (exp_full == EXP_MAX && &man_full))
+                           : (exp_full > EXP_FIN);
 
-  wire [SIG:0] sig_rnd = sig_pre + round_up;
+   // a wrapped accumulator has lost the true magnitude
+   wire                    ovf_any = ovf || acc_sticky;
 
-  // carry out of the significand bumps the exponent, and mantissa is then zero
-  wire [MSB_W:0] exp_out = subnorm ? {{MSB_W{1'b0}}, sig_rnd[MAN]}
-                                  : ({1'b0, msb} - EOFF) + sig_rnd[SIG];
-  // Overflow is anything the format cannot encode: past the top exponent, or
-  // (OCP only) landing exactly on the single NaN code.
-  wire nan_code = OCP && (exp_out == EXP_TOP) && (sig_rnd[MAN-1:0] == {MAN{1'b1}});
-  wire ovf = (exp_out > EXP_TOP) || nan_code;
+   // IEEE overflows to Inf, OCP saturates to the largest finite value.
+   //
+   // RTZ never rounds away from zero, so an overflowing magnitude must be
+   // delivered as the largest finite value, not Inf.
+   //
+   // TODO RDN,RUP requires more overflow handling, RMM=RNE
+   wire                    saturate = OCP || rmode == RTZ;
+   wire [MAN-1:0]          man_max = OCP ? {MAN{1'b1}} - 1 : {MAN{1'b1}};
+   wire [EXP+MAN-1:0]      fields_ovf = saturate ? {EXP_FIN[EXP-1:0], man_max}
+                           : {{EXP{1'b1}}, {MAN{1'b0}}};
+   wire [EXP+MAN-1:0]      fields_y = ovf_any ? fields_ovf
+                           : fields_full[EXP+MAN-1:0];
 
-  // ------------------------------------------------------------------ output
-  // Priority: NaN beats Inf beats overflow beats the rounded value. The sign
-  // of an exactly zero result is forced positive.
+   // override man_y/exp_y results if a sticky flag was set
+   wire                    nan_out = nan_sticky || (inf_pos_sticky && inf_neg_sticky);
+   wire                    inf_out = !nan_out && (inf_pos_sticky || inf_neg_sticky);
+   wire [MAN-1:0]          man_nan = OCP ? {MAN{1'b1}} : {1'b1, {MAN-1{1'b0}}};
 
-  wire nan_out = nan_sticky || (inf_pos_sticky && inf_neg_sticky);
-  wire inf_out = !nan_out && (inf_pos_sticky || inf_neg_sticky);
+   // TODO exact cancellation should be -0 under RDN
+   wire                    sign_y = nzero_sticky || acc_neg;
 
-  // the canonical NaN, and what overflow produces
-  wire [W-1:0] nan_val = OCP ? {1'b0, {EXP{1'b1}}, {MAN{1'b1}}}
-                             : {1'b0, {EXP{1'b1}}, 1'b1, {(MAN - 1) {1'b0}}};
-  // no Inf in OCP mode, so overflow saturates to the largest finite value
-  wire [W-1:0] ovf_val = OCP ? {acc_neg, {EXP{1'b1}}, {(MAN - 1) {1'b1}}, 1'b0}
-                             : {acc_neg, {EXP{1'b1}}, {MAN{1'b0}}};
+   // the only loss is the final rounding
+   assign inexact = !nan_out && !inf_out && (guard_bit || sticky_bit || ovf_any);
 
-  assign y = nan_out ? nan_val
-           : inf_out ? {inf_neg_sticky, {EXP{1'b1}}, {MAN{1'b0}}}
-           : ovf     ? ovf_val
-           : {acc_neg && (|amag), exp_out[EXP-1:0], sig_rnd[MAN-1:0]};
+   // only when the result is both tiny and inexact. ovf implies a non-zero
+   // exp_full, but a wrapped accumulator can leave any value behind.
+   assign underflow = inexact && ~|exp_full && !ovf_any;
+
+   // the rounded exact sum exceeds the largest finite value
+   assign overflow = !nan_out && !inf_out && ovf_any;
+
+   // NaN was introduced, not just propagated
+   assign invalid = invalid_sticky || (inf_pos_sticky && inf_neg_sticky);
+
+   assign y = nan_out ? {1'b0, {EXP{1'b1}}, man_nan}
+              : (inf_out ? {inf_neg_sticky, {EXP{1'b1}}, {MAN{1'b0}}}
+                 : {sign_y, fields_y});
 
 endmodule
+
+`default_nettype wire
