@@ -1,4 +1,5 @@
 *.out
 __pycache__/
-sim_build/
+*.vcd
+*.vvp
 results.xml

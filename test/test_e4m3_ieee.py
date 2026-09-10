@@ -1,49 +1,62 @@
-## IEEE style E4M3
+## E4M3 IEEE
 
 import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+import ml_dtypes
+import numpy as np
 
-RNE = 0
-RTZ = 1
+from test_common import *
+
+EXP, MAN, OCP = 4, 3, 0
+CODES = 1 << (EXP + MAN + 1)
+
+# F8[code] is the E4M3 value with that bit pattern
+F8 = np.arange(CODES, dtype=np.uint8).view(ml_dtypes.float8_e4m3)
+
+# only does RNE
+def mult_ref(a, b):
+    """The E4M3 encoding of a * b, rounded to nearest even."""
+    with np.errstate(invalid="ignore"):
+        y = F8[a:a + 1] * F8[b:b + 1]
+    return int(y.view(np.uint8)[0])
 
 @cocotb.test()
 async def test_multiply(dut):
-    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
+    await start(dut)
 
-    dut.rst_n.value = 0
-    dut.clear.value = 0
-    dut.valid.value = 0
-    dut.rmode.value = RNE
-    dut.a.value = 0
-    dut.b.value = 0
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    dut.rst_n.value = 1
-    await RisingEdge(dut.clk)
+    a = 0b0_0111_000 # = 1.0
+    b = 0b0_0111_000 # = 1.0
+    y = 0b0_0111_000 # = 1.0
 
-    # 1.0 * 1.0 in E4M3: sign 0, exp 0b0111 (bias 7), man 0b000
-    dut.a.value = 0b0_0111_000
-    dut.b.value = 0b0_0111_000
-    dut.clear.value = 1
-    dut.valid.value = 1
-    await RisingEdge(dut.clk)
-    dut.clear.value = 0
-    dut.valid.value = 0
+    await mult(dut, a, b)
+    assert dut.y.value == y
 
-    # y is combinational from acc, settle before sampling
-    await Timer(1, units="ns")
 
-    dut._log.info(
-        "a=%s b=%s y=%s inexact=%s underflow=%s overflow=%s invalid=%s",
-        dut.a.value,
-        dut.b.value,
-        dut.y.value,
-        dut.inexact.value,
-        dut.underflow.value,
-        dut.overflow.value,
-        dut.invalid.value,
-    )
+@cocotb.test()
+async def test_multiply_exhaustive(dut):
+    await start(dut)
+
+    for a in range(0, CODES, STRIDE):
+        for b in range(0, CODES, STRIDE):
+            rne = mult_ref(a, b)
+            await mult(dut, a, b)
+            got = dut.y.value
+            if np.isnan(F8[rne]) and np.isnan(F8[got]):
+                # TODO count how many of these there are and assert on that
+                continue
+            assert got == rne
+
+            # now test the anwer in RTZ mode, we don't need to resubmit inputs
+            await change_rmode(dut, RTZ)
+            got = dut.y.value
+            debug = f"a={F8[a]}, b={F8[b]}, expect={F8[rne]}, got={F8[got]}"
+
+            # TODO count how many of these there are and assert on that
+            assert got == rne or got == rne - 1, debug
+            # print(debug)
+
+# TODO accumulation
+# TODO error flags
+# TODO ODP and other 8 / 16 bit modes
 
 # Local Variables:
 # compile-command: "cd .. ; make test_e4m3_ieee"

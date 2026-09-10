@@ -1,6 +1,6 @@
 A super simple implementation of an Exact floating point [Dot Product](https://en.wikipedia.org/wiki/Dot_product) in verilog. This is aimed at 8bit floating point formats to fit [tinytapeout](https://tinytapeout.com/) but is parameterisable for use in FPGAs or custom tapeouts at higher precision.
 
-"Exact" in the sense that in uses fixed point accumulation and there is a single rounding at the end, such that calculation order doesn't matter, e.g.
+"Exact" in the sense that it uses fixed point accumulation and there is a single rounding at the end, such that calculation order doesn't matter, e.g.
 
 ```
 (1 * 1e10) + (1 * 1e-6) - (10 * 1e9) + (20 * 1e-7)

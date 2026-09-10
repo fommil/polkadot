@@ -1,4 +1,4 @@
-SOURCES = src/polkadot.v src/project.v
+SOURCES = $(wildcard src/*.v)
 
 export PATH := $(CURDIR)/.venv/bin:$(PATH)
 
@@ -11,10 +11,10 @@ export LIBPYTHON_LOC=$(shell cocotb-config --libpython)
 # install deps with:
 #
 # python3 -m venv .venv
-# .venv/bin/pip install 'cocotb<2'
+# .venv/bin/pip install cocotb pytest ml_dtypes
 #
-# PLUSARGS=+dump for a waveform, NOASSERT=1 to run the stimulus without
-# checking, STRIDE=n to thin out the exhaustive tests.
+# PLUSARGS=+dump for a waveform that can be viewed in gtkwave
+# STRIDE=8 to sample the exhaustivity tests (fast sanity check)
 
 all: compile synth test
 
@@ -26,18 +26,20 @@ compile: $(SOURCES)
 synth: $(SOURCES)
 	yosys -p 'read_verilog -sv $(SOURCES); synth -top tt_um_fommil_polkadot_E4M3; stat'
 
-test_e4m3_ieee:
-	rm -rf sim_build/; mkdir sim_build/
-	iverilog -o sim_build/sim.vvp -s polkadot -s dump -g2012 \
-	  -Ppolkadot.EXP=4 -Ppolkadot.MAN=3 -Ppolkadot.OCP=0 -Ppolkadot.GUARD=0 \
-	  src/polkadot.v test/dump_polkadot.v
-	MODULE=test_e4m3_ieee vvp -M $$(cocotb-config --prefix)/cocotb/libs -m libcocotbvpi_icarus sim_build/sim.vvp $(PLUSARGS)
+# polkadot_EXP_MAN_OCP_GUARD.vvp
+polkadot_%.vvp: $(SOURCES) $(wildcard test/*.v)
+	iverilog -o $@ -s polkadot -s dump -g2012 \
+	  -Ppolkadot.EXP=$(word 1,$(subst _, ,$*)) \
+	  -Ppolkadot.MAN=$(word 2,$(subst _, ,$*)) \
+	  -Ppolkadot.OCP=$(word 3,$(subst _, ,$*)) \
+	  -Ppolkadot.GUARD=$(word 4,$(subst _, ,$*)) \
+	  $^
+
+test_e4m3_ieee: polkadot_4_3_0_0.vvp test/test_e4m3_ieee.py
+	MODULE=$@ vvp -M $$(cocotb-config --prefix)/cocotb/libs -m libcocotbvpi_icarus $< $(PLUSARGS)
 	! grep failure results.xml
 
-show_%: %.vcd %.gtkw
-	gtkwave $^
-
 clean:
-	rm -rf *.vcd *.json results.xml sim_build test/__pycache__
+	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__
 
 .PHONY: all compile synth test test_e4m3_ieee clean
