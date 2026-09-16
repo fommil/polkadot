@@ -4,6 +4,7 @@ export PATH := $(CURDIR)/.venv/bin:$(PATH)
 
 export PYTHONPATH := $(CURDIR)/test
 export COCOTB_REDUCED_LOG_FMT=1
+export NO_COLOR=1
 export LIBPYTHON_LOC=$(shell cocotb-config --libpython)
 
 # based on https://github.com/mattvenn/rgb_mixer_2025
@@ -18,7 +19,7 @@ export LIBPYTHON_LOC=$(shell cocotb-config --libpython)
 
 all: compile synth test
 
-test: test_e4m3_ieee
+test: test_e4m3_ieee test_e4m3_ieee_guard
 
 compile: $(SOURCES)
 	iverilog -g2012 -s tt_um_fommil_polkadot_E4M3 $(SOURCES)
@@ -35,11 +36,20 @@ polkadot_%.vvp: $(SOURCES) $(wildcard test/*.v)
 	  -Ppolkadot.GUARD=$(word 4,$(subst _, ,$*)) \
 	  $^
 
-test_e4m3_ieee: polkadot_4_3_0_0.vvp test/test_e4m3_ieee.py
-	MODULE=$@ vvp -M $$(cocotb-config --prefix)/cocotb/libs -m libcocotbvpi_icarus $< $(PLUSARGS)
+VVP = vvp -M $$(cocotb-config --prefix)/cocotb/libs -m libcocotbvpi_icarus
+
+test_e4m3_ieee: test_e4m3_ieee_noguard test_e4m3_ieee_guard
+
+test_e4m3_ieee_noguard: polkadot_4_3_0_0.vvp test/test_e4m3_ieee.py
+	GUARD=0 MODULE=test_e4m3_ieee $(VVP) $< $(PLUSARGS)
+	! grep failure results.xml
+
+# the same tests, with an extra bit of accumulator headroom
+test_e4m3_ieee_guard: polkadot_4_3_0_1.vvp test/test_e4m3_ieee.py
+	GUARD=1 MODULE=test_e4m3_ieee $(VVP) $< $(PLUSARGS)
 	! grep failure results.xml
 
 clean:
 	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__
 
-.PHONY: all compile synth test test_e4m3_ieee clean
+.PHONY: all compile synth test test_e4m3_ieee test_e4m3_ieee_guard clean

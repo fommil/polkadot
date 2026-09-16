@@ -100,6 +100,9 @@ module polkadot
    // Summing gives 2 * (2^EXP - 2) = 2^(EXP+1) - 4. Note that IEEE reserves
    // an exp value for Inf so treating it this way adds two extra guard bits.
    //
+   // FIXME do we want to remove these 2 implicit bits of guard for IEEE?
+   //       if the user wants it, let them request it.
+   //
    // We account for SIGN and GUARD bits, giving us a total width of:
    localparam integer ACC_W = 1 + GUARD + (2 * SIG) + ((1 << (EXP + 1)) - 4);
    // and if we want to index into that, we need this many bits
