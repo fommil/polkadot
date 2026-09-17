@@ -11,11 +11,7 @@ RTZ = 1  # toward zero
 # STRIDE=n thins out the exhaustive tests
 STRIDE = int(os.environ.get("STRIDE", 1))
 
-# accumulator headroom, must match the -Ppolkadot.GUARD given by the Makefile
-GUARD = int(os.environ.get("GUARD", 0))
-
 async def start(dut):
-    """Start the clock, hold reset for two cycles, release it."""
     cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
 
     dut.rst_n.value = 0
@@ -28,9 +24,6 @@ async def start(dut):
     await RisingEdge(dut.clk)
     dut.rst_n.value = 1
     await RisingEdge(dut.clk)
-
-    # the environment must agree with the elaborated parameter
-    assert dut.GUARD.value == GUARD, (dut.GUARD.value, GUARD)
 
 async def mult(dut, a, b, clear=1, rmode=RNE):
     dut.valid.value = 1

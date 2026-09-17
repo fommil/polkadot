@@ -1,14 +1,15 @@
-A super simple implementation of an Exact floating point [Dot Product](https://en.wikipedia.org/wiki/Dot_product) in verilog. This is aimed at 8bit floating point formats to fit [tinytapeout](https://tinytapeout.com/) but is parameterisable for use in FPGAs or custom tapeouts at higher precision.
+The primary usecase for this project is to create hardware LLM accelerators (and other uses of large scale matrix multiplication).
 
-"Exact" in the sense that it uses fixed point accumulation and there is a single rounding at the end, such that calculation order doesn't matter, e.g.
+An implementation of an Exact [Dot Product](https://en.wikipedia.org/wiki/Dot_product) in verilog. This is aimed at 8bit floating point formats to fit [tinytapeout](https://tinytapeout.com/) but is parameterisable for use in FPGAs or custom tapeouts at higher precision.
+
+"Exact" in the sense that it uses fixed point accumulation and there is a single rounding at the end, such that calculation order doesn't matter, e.g. (simplified)
 
 ```
-(1 * 1e10) + (1 * 1e-6) - (10 * 1e9) + (20 * 1e-7)
-=>   1e10  +      1e-6  -      1e10  +       2e-6
-=>   3e-6
+1000 + 0.0001 + 0.0001 - 1000
+=>   0.0002
 ```
 
-whereas rounding after each multiply into a register could yield an answer of `2e-6`.
+whereas rounding after each multiply into a register could yield an answer of `0.0`
 
 There is no limit to the size of the input vectors, an element is added on every clock cycle and the accumulated result always available.
 

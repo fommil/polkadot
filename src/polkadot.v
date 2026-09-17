@@ -97,14 +97,13 @@ module polkadot
    // The width of the integer part is 2 * SIG significand bits (multiplied
    // integer part), and the shift is a sum of each individual shift (i.e. 0 for
    // subnormal, and exp-1 for normal), i.e. 2^EXP - 2 per incoming value.
-   // Summing gives 2 * (2^EXP - 2) = 2^(EXP+1) - 4. Note that IEEE reserves
-   // an exp value for Inf so treating it this way adds two extra guard bits.
+   // Summing gives 2 * (2^EXP - 2) = 2^(EXP+1) - 4.
    //
-   // FIXME do we want to remove these 2 implicit bits of guard for IEEE?
-   //       if the user wants it, let them request it.
-   //
+   // Note that IEEE reserves an exp value for Inf so treating it this way adds
+   // two extra guard bits. We remove these so that there is no implicit guard.
+   localparam integer INF_CORRECTION = OCP ? 0 : -2;
    // We account for SIGN and GUARD bits, giving us a total width of:
-   localparam integer ACC_W = 1 + GUARD + (2 * SIG) + ((1 << (EXP + 1)) - 4);
+   localparam integer ACC_W = INF_CORRECTION + 1 + GUARD + (2 * SIG) + ((1 << (EXP + 1)) - 4);
    // and if we want to index into that, we need this many bits
    localparam integer MSB_W = $clog2(ACC_W); // width of index into ACC_W
 
