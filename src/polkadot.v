@@ -10,14 +10,24 @@
 // same acculation (no need to provide the terms again) by setting rmode (even
 // with an unset valid flag).
 //
-// Specials are selected by OCP:
-//   OCP=0  IEEE 754 style. An all-ones exponent is reserved: mantissa zero is
-//          Inf, anything else is NaN. Largest finite biased exponent is
-//          2**EXP-2, and overflow gives +/-Inf.
-//   OCP=1  OCP FP8 E4M3 style. Only S.1..1.1..1 is NaN and there are no
-//          infinities, so the all-ones exponent is an ordinary one and the
-//          largest finite value has mantissa all-ones-minus-one (448 for
-//          E4M3). Overflow saturates to that value instead.
+// The encoding of the specials is selected by FN (finite):
+//   FN=0      IEEE 754 style. An all-ones exponent is reserved: mantissa zero
+//             is Inf, anything else is NaN. Largest finite biased exponent is
+//             2**EXP-2.
+//   FN=1      OCP FP8 E4M3 style, the "fn" of float8_e4m3fn. Only S.1..1.1..1
+//             is NaN and there are no infinities, so the all-ones exponent is
+//             an ordinary one and the largest finite value has mantissa
+//             all-ones-minus-one (448 for E4M3).
+//
+// What an overflow delivers is selected by the sat input, the saturating and
+// non-saturating modes of OFP8, which requires an implementation to offer both:
+//   sat=0     overflow gives +/-Inf, or NaN when FN leaves no Inf to
+//             reach for.
+//   sat=1     overflow gives the largest finite value, keeping the sign.
+// RTZ saturates whatever sat says, since it can never round away from zero.
+//
+// Unlike rmode, sat is cheap to offer at runtime: it only feeds the output mux
+// and has no effect on the accumulator or its width.
 //
 // A note on power consumption: it is recommended that callers hold a and b
 // steady even when valid is not set high, avoiding unnecessary work being
@@ -33,8 +43,8 @@ module polkadot
   #(
     parameter integer EXP = 4,   // exponent field bits
     parameter integer MAN = 3,   // significand bits, not including implicit bit
-    parameter integer GUARD = 0, // headroom: 2**GUARD worst-case terms
-    parameter integer OCP = 0    // 0: IEEE-style Inf/NaN, 1: OCP FP8 style
+    parameter integer GUARD = 0,  // headroom: 2**GUARD worst-case terms
+    parameter integer FN = 0     // 0: IEEE-style Inf/NaN, 1: OCP FP8 "fn" style
     )
    (
     input wire              clk,
@@ -42,6 +52,7 @@ module polkadot
     input wire              clear,     // start a new accumulation (first cycle)
     input wire              valid,     // accumulate a*b this cycle
     input wire [2:0]        rmode,     // rounding mode, see RNE/RTZ below
+    input wire              sat,       // 0: overflow to Inf/NaN, 1: saturate
     input wire [EXP+MAN:0]  a,         // width = EXP + MAN + 1 (for sign)
     input wire [EXP+MAN:0]  b,
     output wire [EXP+MAN:0] y,         // round(sum of all a*b so far)
@@ -101,7 +112,7 @@ module polkadot
    //
    // Note that IEEE reserves an exp value for Inf so treating it this way adds
    // two extra guard bits. We remove these so that there is no implicit guard.
-   localparam integer INF_CORRECTION = OCP ? 0 : -2;
+   localparam integer INF_CORRECTION = FN ? 0 : -2;
    // We account for SIGN and GUARD bits, giving us a total width of:
    localparam integer ACC_W = INF_CORRECTION + 1 + GUARD + (2 * SIG) + ((1 << (EXP + 1)) - 4);
    // and if we want to index into that, we need this many bits
@@ -138,7 +149,7 @@ module polkadot
    wire [EXP-1:0]     exp_b = b[EXP+MAN-1:MAN];
    wire [MAN-1:0]     man_b = b[MAN-1:0];
 
-   // OCP NaN is all ones exponent and all ones mantissa (no Inf).
+   // The FN NaN is all ones exponent and all ones mantissa (no Inf).
    // IEEE uses all ones exponent with zero mantissa for Inf and non-zero for NaN.
    //
    // syntax reminder:
@@ -148,10 +159,10 @@ module polkadot
    //  &a = a is all 1
    wire               a_zero = ~|exp_a && ~|man_a;
    wire               b_zero = ~|exp_b && ~|man_b;
-   wire               a_nan = OCP ? (&exp_a && &man_a) : (&exp_a && |man_a);
-   wire               b_nan = OCP ? (&exp_b && &man_b) : (&exp_b && |man_b);
-   wire               a_inf = OCP ? 1'b0 : (&exp_a && ~|man_a);
-   wire               b_inf = OCP ? 1'b0 : (&exp_b && ~|man_b);
+   wire               a_nan = FN ? (&exp_a && &man_a) : (&exp_a && |man_a);
+   wire               b_nan = FN ? (&exp_b && &man_b) : (&exp_b && |man_b);
+   wire               a_inf = FN ? 1'b0 : (&exp_a && ~|man_a);
+   wire               b_inf = FN ? 1'b0 : (&exp_b && ~|man_b);
 
    // Expand a*b into its exact fixed-point form.
    //
@@ -288,44 +299,52 @@ module polkadot
    // overflow is reachable by rounding up from the largest finite value
    localparam integer      EXP_MAX = (1 << EXP) - 1; // all ones exponent field
    // largest finite biased exponent
-   localparam integer      EXP_FIN = OCP ? EXP_MAX : EXP_MAX - 1;
-   wire                    ovf = OCP
+   localparam integer      EXP_FIN = FN ? EXP_MAX : EXP_MAX - 1;
+   wire                    ovf = FN
                            ? (exp_full > EXP_MAX || (exp_full == EXP_MAX && &man_full))
                            : (exp_full > EXP_FIN);
 
    // a wrapped accumulator has lost the true magnitude
    wire                    ovf_any = ovf || acc_sticky;
 
-   // IEEE overflows to Inf, OCP saturates to the largest finite value.
+   // Saturation delivers the largest finite value, otherwise an overflow is
+   // Inf, or NaN when there is no Inf to be had (see ovf_nan below).
    //
    // RTZ never rounds away from zero, so an overflowing magnitude must be
    // delivered as the largest finite value, not Inf.
    //
    // TODO RDN,RUP requires more overflow handling, RMM=RNE
-   wire                    saturate = OCP || rmode == RTZ;
-   wire [MAN-1:0]          man_max = OCP ? {MAN{1'b1}} - 1 : {MAN{1'b1}};
+   wire                    saturate = sat || rmode == RTZ;
+   wire [MAN-1:0]          man_max = FN ? {MAN{1'b1}} - 1 : {MAN{1'b1}};
    wire [EXP+MAN-1:0]      fields_ovf = saturate ? {EXP_FIN[EXP-1:0], man_max}
                            : {{EXP{1'b1}}, {MAN{1'b0}}};
    wire [EXP+MAN-1:0]      fields_y = ovf_any ? fields_ovf
                            : fields_full[EXP+MAN-1:0];
 
    // override man_y/exp_y results if a sticky flag was set
-   wire                    nan_out = nan_sticky || (inf_pos_sticky && inf_neg_sticky);
-   wire                    inf_out = !nan_out && (inf_pos_sticky || inf_neg_sticky);
-   wire [MAN-1:0]          man_nan = OCP ? {MAN{1'b1}} : {1'b1, {MAN-1{1'b0}}};
+   wire                    nan_specials = nan_sticky || (inf_pos_sticky && inf_neg_sticky);
+   wire                    inf_out = !nan_specials && (inf_pos_sticky || inf_neg_sticky);
+   // an overflow that is neither saturated nor able to become Inf is a NaN,
+   // which is what OFP8 requires of E4M3 in the non-saturating mode. The Inf
+   // pattern that fields_ovf produces in that case is masked out below.
+   wire                    ovf_nan = FN && !saturate && ovf_any && !nan_specials;
+   wire                    nan_out = nan_specials || ovf_nan;
+   wire [MAN-1:0]          man_nan = FN ? {MAN{1'b1}} : {1'b1, {MAN-1{1'b0}}};
 
    // TODO exact cancellation should be -0 under RDN
    wire                    sign_y = nzero_sticky || acc_neg;
 
    // the only loss is the final rounding
-   assign inexact = !nan_out && !inf_out && (guard_bit || sticky_bit || ovf_any);
+   // (an overflow delivered as a NaN is still inexact and overflowing, hence
+   // nan_specials rather than nan_out here and below)
+   assign inexact = !nan_specials && !inf_out && (guard_bit || sticky_bit || ovf_any);
 
    // only when the result is both tiny and inexact. ovf implies a non-zero
    // exp_full, but a wrapped accumulator can leave any value behind.
    assign underflow = inexact && ~|exp_full && !ovf_any;
 
    // the rounded exact sum exceeds the largest finite value
-   assign overflow = !nan_out && !inf_out && ovf_any;
+   assign overflow = !nan_specials && !inf_out && ovf_any;
 
    // NaN was introduced, not just propagated
    assign invalid = invalid_sticky || (inf_pos_sticky && inf_neg_sticky);
