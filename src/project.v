@@ -5,6 +5,57 @@
 
 `default_nettype none
 
+// TinyTapeout wrapper: polkadot as an E4M3 (OCP FP8, fn) dot-product
+// accumulator.
+//
+// Design note: TT has 8 inputs, 8 outputs and 8 fixed in/outs. polkadot (for
+// e4m3) has 16 inputs, 6 control inputs, 16 outputs and 4 error outputs. So
+// either we mess with the CLK and allow one-cycle computations using only
+// defaults or we split the operation over two cycles. This design chooses the
+// latter, since an 8 bit computer would need two cycles anyway to provide both
+// input values.
+//
+// Pins
+//   ui_in[7:0]    operand byte (E4M3 or CTRL)
+//   uio_in[3:0]   opcode (input)
+//   uio_out[7:4]  {strobe, invalid, overflow, inexact} (output)
+//   uo_out[7:0]   y = round(sum of a*b so far)
+//   uio_oe        8'b1111_0000
+//
+// Opcodes
+//   0000 NOP         hold
+//   0001 LOAD_A_CLR  reg_a <= ui_in, accumulator = +0.0 (pending)
+//   0010 LOAD_A      reg_a <= ui_in
+//   0011 MAC         accumulator += reg_a * ui_in
+//   0100 ADD_CLR     accumulator = ui_in * 1.0
+//   0101 ADD         accumulator += ui_in * 1.0
+//   0110 CTRL        rmode <= ui_in[2:0], sat <= ui_in[3]
+//   else reserved
+//
+// Only reg_a is stored: b comes straight from ui_in on the issuing cycle.
+// rmode and sat persist until changed; clear is per-instruction.
+//
+// uo_out and the flags are one cycle behind the instruction that issued them,
+// and strobe marks the cycles on which they may have changed.
+//
+//   LOAD_A_CLR a  =>  ?          (no strobe)
+//          MAC b  =>  a*b
+//       LOAD_A c  =>  a*b        (no strobe)
+//          MAC d  =>  a*b + c*d
+//          CTRL   =>  a*b + c*d
+//          ADD e  =>  a*b + c*d + e
+//
+// rmode or sat may be provided retrospectively to change the rounding mode
+// after an accumulation has happened and the CTRL state will persist for future
+// accumulations. The default is RNE with no saturation 4'b0000.
+//
+// underflow is not pinned out, reconstruct it as
+//
+//   underflow == inexact && !overflow && (uo_out[EXP+MAN-1:MAN] == 0)
+//
+// Pending clear survives `NOP`, `LOAD_A` and `CTRL`; it is consumed by the next
+// `MAC`/`ADD`. Implying `LOAD_A_CLR a; ADD e` behave like `ADD_CLR e` (`a` is
+// discarded). Two `_CLR` in a row discards the first.
 module tt_um_fommil_polkadot_E4M3
   (
    input wire [7:0]  ui_in,   // Dedicated inputs
@@ -17,25 +68,95 @@ module tt_um_fommil_polkadot_E4M3
    input wire        rst_n    // reset_n - low to reset
    );
 
-   // FIXME
-   // Every cycle takes 16 bits (two 8 bit floating point numbers), and outputs
-   // 8 bits (floating point number). But I need a signal to indicate that I
-   // want to reset the internal state. And I want the option in the future to
-   // be able to specify a rounding mode. I'm struggling to see how to do that
-   // in a single cycle.
+   localparam integer     EXP  = 4;
+   localparam integer     MAN  = 3;
+   localparam [EXP-1:0]   BIAS = (1 << (EXP - 1)) - 1;
 
-   // If the caller can write to uio_oe I could use that for the reset and
-   // rounding modes, and potentially even provide useful debugging feedback on
-   // the uio_out in response.
+   localparam [EXP+MAN:0] ONE  = {1'b0, BIAS, {MAN{1'b0}}};
 
-   // All output pins must be assigned. If not used, assign to 0.
-   assign uo_out  = ui_in + uio_in;  // Example: ou_out is the sum of ui_in and uio_in
-   assign uio_out = 0;
-   assign uio_oe  = 0;
+   localparam [3:0]       OP_NOP        = 4'b0000;
+   localparam [3:0]       OP_LOAD_A_CLR = 4'b0001;
+   localparam [3:0]       OP_LOAD_A     = 4'b0010;
+   localparam [3:0]       OP_MAC        = 4'b0011;
+   localparam [3:0]       OP_ADD_CLR    = 4'b0100;
+   localparam [3:0]       OP_ADD        = 4'b0101;
+   localparam [3:0]       OP_CTRL       = 4'b0110;
 
-   // List all unused inputs to prevent warnings
-   wire _unused = &{ena, clk, rst_n, 1'b0};
+   wire [3:0]             op = uio_in[3:0];
+
+   wire                   is_load_clr = (op == OP_LOAD_A_CLR);
+   wire                   is_load     = (op == OP_LOAD_A);
+   wire                   is_mac      = (op == OP_MAC);
+   wire                   is_add_clr  = (op == OP_ADD_CLR);
+   wire                   is_add      = (op == OP_ADD);
+   wire                   is_ctrl     = (op == OP_CTRL);
+
+   wire                   valid = is_mac | is_add | is_add_clr;
+
+   reg [7:0]              reg_a;
+   reg                    clr_pending;
+   reg [2:0]              rmode;
+   reg                    sat;
+   reg                    strobe;
+
+   wire                   clear = clr_pending | is_add_clr;
+
+   wire [7:0]             a = (is_add | is_add_clr) ? ONE : reg_a;
+   wire [7:0]             b = ui_in;
+
+   always @(posedge clk) begin
+      if (!rst_n) begin
+         reg_a       <= 8'b0000_0000;
+         clr_pending <= 1'b0;
+         rmode       <= 3'b000; // RNE
+         sat         <= 1'b0;
+         strobe      <= 1'b0;
+      end else begin
+         if (is_load | is_load_clr)
+           reg_a <= ui_in;
+
+         if (is_load_clr)
+           clr_pending <= 1'b1;
+         else if (valid)
+           clr_pending <= 1'b0;
+
+         if (is_ctrl) begin
+            rmode <= ui_in[2:0];
+            sat   <= ui_in[3];
+         end
+
+         strobe <= valid | is_ctrl;
+      end
+   end
+
+   wire inexact, underflow, overflow, invalid;
+
+   polkadot #(.EXP(EXP), .MAN(MAN), .GUARD(0), .FN(1)) dut
+     (
+      .clk(clk),
+      .rst_n(rst_n),
+      .clear(clear),
+      .valid(valid),
+      .rmode(rmode),
+      .sat(sat),
+      .a(a),
+      .b(b),
+      .y(uo_out),
+      .inexact(inexact),
+      .underflow(underflow),
+      .overflow(overflow),
+      .invalid(invalid)
+      );
+
+   assign uio_out = {strobe, invalid, overflow, inexact, 4'b0000};
+   assign uio_oe  = 8'b1111_0000;
+
+   wire _unused = &{ena, underflow, uio_in[7:4], 1'b0};
 
 endmodule
 
 `default_nettype wire
+
+// Local Variables:
+// compile-command: "cd .. && make compile"
+// End:

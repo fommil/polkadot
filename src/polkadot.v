@@ -356,3 +356,7 @@ module polkadot
 endmodule
 
 `default_nettype wire
+
+// Local Variables:
+// compile-command: "cd .. && make compile"
+// End:
