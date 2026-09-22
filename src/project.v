@@ -84,14 +84,7 @@ module tt_um_fommil_polkadot_E4M3
 
    wire [3:0]             op = uio_in[3:0];
 
-   wire                   is_load_clr = (op == OP_LOAD_A_CLR);
-   wire                   is_load     = (op == OP_LOAD_A);
-   wire                   is_mac      = (op == OP_MAC);
-   wire                   is_add_clr  = (op == OP_ADD_CLR);
-   wire                   is_add      = (op == OP_ADD);
-   wire                   is_ctrl     = (op == OP_CTRL);
-
-   wire                   valid = is_mac | is_add | is_add_clr;
+   wire                   valid = (op == OP_MAC) | (op == OP_ADD) | (op == OP_ADD_CLR);
 
    reg [7:0]              reg_a;
    reg                    clr_pending;
@@ -99,9 +92,9 @@ module tt_um_fommil_polkadot_E4M3
    reg                    sat;
    reg                    strobe;
 
-   wire                   clear = clr_pending | is_add_clr;
+   wire                   clear = clr_pending | (op == OP_ADD_CLR);
 
-   wire [7:0]             a = (is_add | is_add_clr) ? ONE : reg_a;
+   wire [7:0]             a = ((op == OP_ADD) | (op == OP_ADD_CLR)) ? ONE : reg_a;
    wire [7:0]             b = ui_in;
 
    always @(posedge clk) begin
@@ -112,20 +105,20 @@ module tt_um_fommil_polkadot_E4M3
          sat         <= 1'b0;
          strobe      <= 1'b0;
       end else begin
-         if (is_load | is_load_clr)
+         if ((op == OP_LOAD_A) | (op == OP_LOAD_A_CLR))
            reg_a <= ui_in;
 
-         if (is_load_clr)
+         if (op == OP_LOAD_A_CLR)
            clr_pending <= 1'b1;
          else if (valid)
            clr_pending <= 1'b0;
 
-         if (is_ctrl) begin
+         if (op == OP_CTRL) begin
             rmode <= ui_in[2:0];
             sat   <= ui_in[3];
          end
 
-         strobe <= valid | is_ctrl;
+         strobe <= valid | (op == OP_CTRL);
       end
    end
 

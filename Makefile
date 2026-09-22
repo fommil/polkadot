@@ -45,7 +45,7 @@ CONFIGS += 8_7_0_0  # ml_dtypes.bfloat16 (de-facto standard, not IEEE)
 endif
 TESTS = $(CONFIGS:%=test_polkadot_%)
 
-test: $(TESTS)
+test: $(TESTS) test_project
 
 compile: $(SOURCES)
 	iverilog -g2012 -s tt_um_fommil_polkadot_E4M3 $(SOURCES)
@@ -71,7 +71,15 @@ test_polkadot_%: polkadot_%.vvp test/test_polkadot.py
 	COCOTB_TEST_MODULES=test_polkadot $(VVP) $< $(PLUSARGS)
 	python -m cocotb_tools.check_results results.xml
 
+project.vvp: $(SOURCES) test/dump_project.v
+	iverilog -o $@ -s tt_um_fommil_polkadot_E4M3 -s dump_project -g2012 $^
+
+test_project: project.vvp test/test_project.py
+	@rm -f results.xml
+	COCOTB_TEST_MODULES=test_project $(VVP) $< $(PLUSARGS)
+	python -m cocotb_tools.check_results results.xml
+
 clean:
 	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__
 
-.PHONY: all compile synth test clean
+.PHONY: all compile synth test test_project clean
