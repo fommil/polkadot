@@ -56,6 +56,7 @@
 // Pending clear survives `NOP`, `LOAD_A` and `CTRL`; it is consumed by the next
 // `MAC`/`ADD`. Implying `LOAD_A_CLR a; ADD e` behave like `ADD_CLR e` (`a` is
 // discarded). Two `_CLR` in a row discards the first.
+/* verilator lint_off DECLFILENAME */
 module tt_um_fommil_polkadot_E4M3
   (
    input wire [7:0]  ui_in,   // Dedicated inputs
@@ -74,7 +75,9 @@ module tt_um_fommil_polkadot_E4M3
 
    localparam [EXP+MAN:0] ONE  = {1'b0, BIAS, {MAN{1'b0}}};
 
+   /* verilator lint_off UNUSEDPARAM */
    localparam [3:0]       OP_NOP        = 4'b0000;
+   /* verilator lint_on UNUSEDPARAM */
    localparam [3:0]       OP_LOAD_A_CLR = 4'b0001;
    localparam [3:0]       OP_LOAD_A     = 4'b0010;
    localparam [3:0]       OP_MAC        = 4'b0011;

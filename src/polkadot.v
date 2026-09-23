@@ -45,7 +45,7 @@ module polkadot
     parameter integer EXP = 4,   // exponent field bits
     parameter integer MAN = 3,   // significand bits, not including implicit bit
     parameter integer GUARD = 0,  // headroom: 2**GUARD worst-case terms
-    parameter integer FN = 0     // 0: IEEE-style Inf/NaN, 1: OCP FP8 "fn" style
+    parameter [0:0] FN = 0       // 0: IEEE-style Inf/NaN, 1: OCP FP8 "fn" style
     )
    (
     input wire              clk,
@@ -175,7 +175,7 @@ module polkadot
    wire [MAN:0]       sig_a = {|exp_a, man_a};
    wire [MAN:0]       sig_b = {|exp_b, man_b};
    wire [2*SIG-1:0]   prod = sig_a * sig_b; // costly
-   wire [ACC_W-1:0]   prod_acc = prod;   // widen before shifting
+   wire [ACC_W-1:0]   prod_acc = {{ACC_W-2*SIG{1'b0}}, prod}; // widen before shifting
    wire [ACC_W-1:0]   mag = prod_acc << shift; // costly
    // set the sign
    wire               sign = sign_a ^ sign_b;
@@ -270,11 +270,14 @@ module polkadot
 
    // A bit at index i has value 2^(i-ACC_POINT), and a normal float with biased
    // exp e has value 2^(e-BIAS), so e = msb - ACC_POINT + BIAS.
-   wire [MSB_W-1:0]        exp_norm = msb - (ACC_POINT - BIAS);
+   localparam integer      EXP_OFF = ACC_POINT - BIAS;
+   wire [MSB_W-1:0]        exp_norm = msb - EXP_OFF[MSB_W-1:0];
    wire [MSB_W-1:0]        exp_y = is_norm ? exp_norm : 0;
 
    // guard bit is the bit immediately below the truncated slice
-   wire [MSB_W-1:0]        guard_idx = is_norm ? msb - MAN - 1 : NORM_LSB - MAN - 1;
+   localparam integer      GUARD_OFF = MAN + 1;
+   localparam integer      GUARD_SUB = NORM_LSB - MAN - 1;
+   wire [MSB_W-1:0]        guard_idx = is_norm ? msb - GUARD_OFF[MSB_W-1:0] : GUARD_SUB[MSB_W-1:0];
    wire [ACC_W-1:0]        lo_mask = (1 << guard_idx) - 1;
    wire                    guard_bit = amag[guard_idx];
    // sticky bit is OR of everything strictly below the guard
@@ -300,7 +303,7 @@ module polkadot
    //
    // The exponent is kept at full MSB_W width here (plus a carry bit) so that
    // the overflow test below sees the true value rather than a wrapped one.
-   wire [MSB_W+MAN:0]      fields_full = {1'b0, exp_y, man_y} + round_up;
+   wire [MSB_W+MAN:0]      fields_full = {1'b0, exp_y, man_y} + {{MSB_W+MAN{1'b0}}, round_up};
    wire [MSB_W:0]          exp_full = fields_full[MSB_W+MAN:MAN];
    wire [MAN-1:0]          man_full = fields_full[MAN-1:0];
 
@@ -309,8 +312,8 @@ module polkadot
    // largest finite biased exponent
    localparam integer      EXP_FIN = FN ? EXP_MAX : EXP_MAX - 1;
    wire                    ovf = FN
-                           ? (exp_full > EXP_MAX || (exp_full == EXP_MAX && &man_full))
-                           : (exp_full > EXP_FIN);
+                           ? (exp_full > EXP_MAX[MSB_W:0] || (exp_full == EXP_MAX[MSB_W:0] && &man_full))
+                           : (exp_full > EXP_FIN[MSB_W:0]);
 
    // a wrapped accumulator has lost the true magnitude
    wire                    ovf_any = ovf || acc_sticky;

@@ -3,3 +3,9 @@ __pycache__/
 *.vcd
 *.vvp
 results.xml
+runs/
+tt_submission/
+src/user_config.json
+src/config_merged.json
+gds_render*
+*.dot

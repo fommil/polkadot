@@ -1,5 +1,9 @@
 SOURCES = $(wildcard src/*.v)
 
+# provide your own PDK_ROOT if you already have one from another project
+export PDK_ROOT ?= $(HOME)/.ciel
+export PDK ?= sky130A
+
 export PATH := $(CURDIR)/.venv/bin:$(PATH)
 
 export PYTHONPATH := $(CURDIR)/test
@@ -11,13 +15,10 @@ export COCOTB_LOG_LEVEL GPI_LOG_LEVEL
 export PYGPI_PYTHON_BIN := $(shell cocotb-config --python-bin)
 export GPI_USERS := $(shell cocotb-config --libpython);$(shell cocotb-config --pygpi-entry-point)
 
-# based on https://github.com/mattvenn/rgb_mixer_2025
-#
-# install deps with:
-#
-# python3 -m venv .venv
-# .venv/bin/pip install cocotb pytest ml_dtypes
-#
+# match the version of librelane to the shuttle...
+# https://raw.githubusercontent.com/TinyTapeout/tt-gds-action/ttsky26d/action.yml
+LIBRELANE_VERSION = 3.0.14
+
 # PLUSARGS=+dump for a waveform that can be viewed in gtkwave
 #
 # SWEEP_LIMIT=n caps each pair sweep at about n transactions. The default sweeps
@@ -48,6 +49,7 @@ TESTS = $(CONFIGS:%=test_polkadot_%)
 test: $(TESTS) test_project
 
 compile: $(SOURCES)
+	verilator --lint-only -Wall --top-module tt_um_fommil_polkadot_E4M3 $(SOURCES)
 	iverilog -g2012 -s tt_um_fommil_polkadot_E4M3 $(SOURCES)
 
 synth: $(SOURCES)
@@ -79,7 +81,28 @@ test_project: project.vvp test/test_project.py
 	COCOTB_TEST_MODULES=test_project $(VVP) $< $(PLUSARGS)
 	python -m cocotb_tools.check_results results.xml
 
-clean:
-	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__
+harden: $(SOURCES) info.yaml src/config.json
+	tt/tt_tool.py --create-user-config
+	tt/tt_tool.py --harden
+	tt/tt_tool.py --print-warnings
 
-.PHONY: all compile synth test test_project clean
+explore:
+	python -m librelane --dockerized --pdk-root "$(PDK_ROOT)" --pdk sky130A -f SynthesisExploration src/config_merged.json
+
+# just for fun
+render:
+	python tt/tt_tool.py --create-svg --create-png
+	convert gds_render.png -resize 1000x render.jpg
+	yowasp-yosys -p "read_verilog src/polkadot.v; prep -top polkadot; show -format svg -prefix docs/netlist"
+	dot -Tsvg 'docs/netlist.dot' > 'docs/netlist.svg.new' && mv 'docs/netlist.svg.new' 'docs/netlist.svg'
+
+deps:
+	git submodule update --init
+	python3 -m venv .venv
+	.venv/bin/pip install -r tt/requirements.txt cocotb pytest librelane==$(LIBRELANE_VERSION)
+	.venv/bin/pip install --no-deps 'ml_dtypes>=0.5,<0.6' # otherwise we get 0.4
+
+clean:
+	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__ .venv/
+
+.PHONY: all compile synth test test_project harden deps clean
