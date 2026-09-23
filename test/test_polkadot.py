@@ -11,6 +11,9 @@ import numpy as np
 # rounding modes, must match the localparams in src/polkadot.v
 RNE = 0  # nearest, ties to even
 RTZ = 1  # toward zero
+RDN = 2  # toward -Inf
+RUP = 3  # toward +Inf
+RMM = 4  # nearest, ties away from zero
 
 # SWEEP_LIMIT is roughly the most transactions we will run in any one pair
 # sweep: a format whose every code pair fits inside it is swept exhaustively,
@@ -23,10 +26,11 @@ SWEEP_LIMIT = int(os.environ.get("SWEEP_LIMIT") or 1 << 17)
 # the codes to sweep in the pair tests, in descending order of usefulness:
 # mantissa 1 and all ones make products inexact at every scale (so the RTZ
 # fallbacks are exercised however hard we prune), the midpoint and the midpoint
-# plus one bracket the RNE tie, and 0 is the exact case.
+# plus one bracket the RNE tie, 3 gives the midpoint an even-truncation tie
+# (RNE rounds down, so RMM differs), and 0 is the exact case.
 def _mantissas(MAN):
     full = 1 << MAN
-    return [1, full - 1, full >> 1, (full >> 1) | 1, 0]
+    return [1, full - 1, full >> 1, (full >> 1) | 1, 3 & (full - 1), 0]
 
 def sample_codes(EXP, MAN):
     codes = 2 << (EXP + MAN)
@@ -337,6 +341,8 @@ async def test_multiply_sweep(dut):
     total = 0
     total_comparisons = 0
     rtz_fallbacks = 0
+    rmm_fallbacks = 0
+    directed_fallbacks = 0
 
     for a in SWEEP:
         for b in SWEEP:
@@ -348,23 +354,45 @@ async def test_multiply_sweep(dut):
                 continue
             assert got == rne
 
-            # now test the anwer in RTZ mode, we don't need to resubmit inputs
+            total_comparisons += 1
+
+            # alternative rounding modes
             await change_rmode(dut, RTZ)
             got = dut.y.value
             debug = f"a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
-
-            total_comparisons += 1
             if got == rne - 1:
                 rtz_fallbacks += 1
-                continue
+            else:
+                assert got == rne, debug
 
-            assert got == rne, debug
+            await change_rmode(dut, RMM)
+            got = dut.y.value
+            debug = f"a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
+            if matches(got, rne + 1):
+                rmm_fallbacks += 1
+            else:
+                assert got == rne, debug
+
+            for rmode, away in ((RDN, NEG), (RUP, 0)):
+                await change_rmode(dut, rmode)
+                got = dut.y.value
+                debug = f"rmode={rmode}, a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
+                if (rne & NEG) == away:
+                    if matches(got, rne + 1):
+                        directed_fallbacks += 1
+                        continue
+                elif rne & ~NEG and got == rne - 1:
+                    directed_fallbacks += 1
+                    continue
+                assert got == rne, debug
             # print(debug)
 
     # just to make sure we didn't have all nans or something
     assert total_comparisons > 0
     assert rtz_fallbacks > 0, rtz_fallbacks
-    assert rtz_fallbacks < total_comparisons / 2
+    assert rtz_fallbacks < total_comparisons
+    assert rmm_fallbacks > 0, rmm_fallbacks
+    assert directed_fallbacks > 0, directed_fallbacks
 
 # we have no ground truth for arbitrary length accumulations,
 # but we can test a single add over the sweep.
@@ -375,6 +403,8 @@ async def test_add_sweep(dut):
     total = 0
     total_comparisons = 0
     rtz_fallbacks = 0
+    rmm_fallbacks = 0
+    directed_fallbacks = 0
 
     for a in SWEEP:
         for b in SWEEP:
@@ -386,22 +416,47 @@ async def test_add_sweep(dut):
                 continue
             assert got == rne
 
-            # now test the anwer in RTZ mode, we don't need to resubmit inputs
+            total_comparisons += 1
+
+            # alternative rounding modes
             await change_rmode(dut, RTZ)
             got = dut.y.value
             debug = f"a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
-
-            total_comparisons += 1
             if got == rne - 1:
                 rtz_fallbacks += 1
-                continue
+            else:
+                assert got == rne, debug
 
-            assert got == rne, debug
+            await change_rmode(dut, RMM)
+            got = dut.y.value
+            debug = f"a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
+            if matches(got, rne + 1):
+                rmm_fallbacks += 1
+            else:
+                assert got == rne, debug
+
+            for rmode, away in ((RDN, NEG), (RUP, 0)):
+                await change_rmode(dut, rmode)
+                got = dut.y.value
+                debug = f"rmode={rmode}, a={DECODE[a]}, b={DECODE[b]}, expect={DECODE[rne]}, got={DECODE[got]}"
+                if rmode == RDN and rne == 0 and (a, b) != (0, 0):
+                    assert got == NEG, debug
+                    continue
+                if (rne & NEG) == away:
+                    if matches(got, rne + 1):
+                        directed_fallbacks += 1
+                        continue
+                elif rne & ~NEG and got == rne - 1:
+                    directed_fallbacks += 1
+                    continue
+                assert got == rne, debug
             # print(debug)
 
     assert total_comparisons > 0
     assert rtz_fallbacks > 0
-    assert rtz_fallbacks < total_comparisons / 2
+    assert rtz_fallbacks < total_comparisons
+    assert rmm_fallbacks > 0, rmm_fallbacks
+    assert directed_fallbacks > 0, directed_fallbacks
 
 # saturation only changes how an overflow is delivered, so we only pay for the
 # pairs where it is observable

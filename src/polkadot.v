@@ -24,7 +24,8 @@
 //   sat=0     overflow gives +/-Inf, or NaN when FN leaves no Inf to
 //             reach for.
 //   sat=1     overflow gives the largest finite value, keeping the sign.
-// RTZ saturates whatever sat says, since it can never round away from zero.
+// RTZ saturates whatever sat says, since it can never round away from zero,
+// and likewise RDN for positive and RUP for negative results.
 //
 // Unlike rmode, sat is cheap to offer at runtime: it only feeds the output mux
 // and has no effect on the accumulator or its width.
@@ -77,9 +78,9 @@ module polkadot
    // is the simplest of all the rounding modes.
    localparam RNE = 0; // nearest, ties to even
    localparam RTZ = 1; // toward zero, i.e. plain truncation
-   // TODO RDN (010, toward -Inf)
-   // TODO RUP (011, toward +Inf)
-   // TODO RMM (100, nearest ties away from zero)
+   localparam RDN = 2; // toward -Inf
+   localparam RUP = 3; // toward +Inf
+   localparam RMM = 4; // nearest, ties away from zero
 
    // An exp value of 0 indicates a subnormal; the implicit leading bit is 0.
    // Its (unsigned) fixed point value is `mantissa * 2^(1-BIAS-MAN)`, with the
@@ -186,8 +187,9 @@ module polkadot
    // the dot product accumulator
    reg signed [ACC_W-1:0]  acc;
    // Sticky bits handle special flag pollution. Note that we need to track if
-   // everything was negative zero because -0 + -0 = -0.
-   reg                     nan_sticky, inf_pos_sticky, inf_neg_sticky, nzero_sticky;
+   // everything was negative zero because -0 + -0 = -0, and if everything was
+   // positive zero because RDN gives -0 for any other exact zero sum.
+   reg                     nan_sticky, inf_pos_sticky, inf_neg_sticky, nzero_sticky, pzero_sticky;
    // Set if a term introduced a NaN of its own, see invalid_in.
    reg                     invalid_sticky;
    // Set if the accumulator ever wrapped past the GUARD bits, see acc_ovf.
@@ -201,6 +203,7 @@ module polkadot
    wire                    nan_in = a_nan || b_nan || invalid_in;
    wire                    inf_in = !nan_in && (a_inf || b_inf);
    wire                    nzero_in = (a_zero || b_zero) && sign;
+   wire                    pzero_in = (a_zero || b_zero) && !sign;
 
    wire signed [ACC_W-1:0] acc_op = clear ? {ACC_W{1'b0}} : acc;
    wire signed [ACC_W-1:0] acc_sum = acc_op + term; // costly
@@ -217,6 +220,7 @@ module polkadot
          inf_pos_sticky <= 0;
          inf_neg_sticky <= 0;
          nzero_sticky <= 0;
+         pzero_sticky <= 1;
          acc_sticky <= 0;
          invalid_sticky <= 0;
       end
@@ -227,6 +231,7 @@ module polkadot
          inf_pos_sticky <= (clear ? 0 : inf_pos_sticky) || (inf_in && !sign);
          inf_neg_sticky <= (clear ? 0 : inf_neg_sticky) || (inf_in && sign);
          nzero_sticky <= (clear ? 1 : nzero_sticky) && nzero_in;
+         pzero_sticky <= (clear ? 1 : pzero_sticky) && pzero_in;
          invalid_sticky <= (clear ? 0 : invalid_sticky) || invalid_in;
       end
    end
@@ -281,6 +286,9 @@ module polkadot
       case (rmode)
         RNE: round_up = guard_bit && (sticky_bit || man_y[0]);
         RTZ: round_up = 0;
+        RMM: round_up = guard_bit;
+        RDN: round_up = (guard_bit || sticky_bit) && acc_neg;
+        RUP: round_up = (guard_bit || sticky_bit) && !acc_neg;
         default: round_up = 0;
       endcase
    end
@@ -313,8 +321,9 @@ module polkadot
    // RTZ never rounds away from zero, so an overflowing magnitude must be
    // delivered as the largest finite value, not Inf.
    //
-   // TODO RDN,RUP requires more overflow handling, RMM=RNE
-   wire                    saturate = sat || rmode == RTZ;
+   // Likewise RDN for a positive, and RUP for a negative, magnitude.
+   wire                    saturate = sat || rmode == RTZ ||
+                           (rmode == RDN && !acc_neg) || (rmode == RUP && acc_neg);
    wire [MAN-1:0]          man_max = FN ? {MAN{1'b1}} - 1 : {MAN{1'b1}};
    wire [EXP+MAN-1:0]      fields_ovf = saturate ? {EXP_FIN[EXP-1:0], man_max}
                            : {{EXP{1'b1}}, {MAN{1'b0}}};
@@ -331,8 +340,10 @@ module polkadot
    wire                    nan_out = nan_specials || ovf_nan;
    wire [MAN-1:0]          man_nan = FN ? {MAN{1'b1}} : {1'b1, {MAN-1{1'b0}}};
 
-   // TODO exact cancellation should be -0 under RDN
-   wire                    sign_y = nzero_sticky || acc_neg;
+   // IEEE 754-2019 6.3: an exact zero sum is -0 under RDN unless every term
+   // was +0.
+   wire                    sign_y = nzero_sticky || acc_neg ||
+                           (rmode == RDN && ~|amag && !pzero_sticky);
 
    // the only loss is the final rounding
    // (an overflow delivered as a NaN is still inexact and overflowing, hence

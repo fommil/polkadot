@@ -1,5 +1,3 @@
-## tests the TinyTapeout wrapper tt_um_fommil_polkadot_E4M3 through its pins
-
 import os
 from collections import namedtuple
 from math import isqrt
@@ -9,7 +7,6 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 import ml_dtypes
 import numpy as np
 
-# opcodes, must match the localparams in src/project.v
 OP_NOP        = 0b0000
 OP_LOAD_A_CLR = 0b0001
 OP_LOAD_A     = 0b0010
@@ -19,12 +16,11 @@ OP_ADD        = 0b0101
 OP_CTRL       = 0b0110
 OP_RESERVED   = range(0b0111, 0b10000)
 
-# CTRL operand, rmode must match the localparams in src/polkadot.v
 RNE = 0
 RTZ = 1
+RMM = 4
 SAT = 0b1000
 
-# as in test_polkadot.py, the default exhausts all 2**16 pairs
 SWEEP_LIMIT = int(os.environ.get("SWEEP_LIMIT") or 1 << 17)
 
 # OCP OFP8 E4M3 (fn): BIAS 7, no Inf, S.1111.111 is the only NaN
@@ -47,30 +43,29 @@ with np.errstate(invalid="ignore"):
     DECODE = (np.arange(CODES, dtype=np.uint8)
               .view(ml_dtypes.float8_e4m3fn).astype(np.float64))
 MAX_F = DECODE[MAX]
-OVF_MAG = MAX_F + 16.0  # the RNE tie between MAX and the missing 480
+OVF_MAG = MAX_F + 16.0
 
 def isnan(code):
     return bool(np.isnan(DECODE[int(code)]))
 
-# codes compare exactly, except that any NaN will do for a NaN
 def matches(got, expect):
     return int(got) == expect or (isnan(expect) and isnan(got))
 
-# the oracle, exact is a float64 which is exact for one product or one sum.
-# The overflow region is decided here so that ml_dtypes only ever rounds
-# in-range values.
+# because we have a dtype for e4m3 we have an oracle for the rounding
 def round_ref(exact, rmode=RNE, sat=0):
     if np.isnan(exact):
         return NAN
     neg = NEG if np.signbit(exact) else 0
     mag = abs(exact)
-    if mag > OVF_MAG and rmode == RNE and not sat:
+    if not sat and (rmode == RNE and mag > OVF_MAG or rmode == RMM and mag >= OVF_MAG):
         return NAN
     if mag >= MAX_F:
         return neg | MAX
     y = int(np.array([exact]).astype(ml_dtypes.float8_e4m3fn).view(np.uint8)[0])
     if rmode == RTZ and abs(DECODE[y]) > mag:
-        y -= 1  # sign-magnitude, so this is one code toward zero
+        y -= 1
+    if rmode == RMM and abs(DECODE[y]) < mag and mag - abs(DECODE[y]) == abs(DECODE[y + 1]) - mag:
+        y += 1
     return y
 
 def product(a, b):
@@ -85,7 +80,7 @@ def sample_codes():
     if CODES * CODES <= SWEEP_LIMIT:
         return list(range(CODES))
     want = max(2, isqrt(SWEEP_LIMIT))
-    step = -(-CODES // want) | 1  # odd, so both mantissa parities
+    step = -(-CODES // want) | 1
     specials = {ZERO, MIN, EIGHTH, ONE, MAX, NAN}
     return sorted(set(range(0, CODES, step)) | specials | {c | NEG for c in specials})
 
@@ -93,8 +88,6 @@ SWEEP = sample_codes()
 
 Pins = namedtuple("Pins", "y strobe inexact overflow invalid")
 
-# inputs change on the falling edge, outputs are sampled once the rising edge
-# that consumed them has settled, i.e. the cycle after the instruction
 async def issue(dut, op, byte=0):
     dut.uio_in.value = op
     dut.ui_in.value = byte
@@ -138,12 +131,16 @@ def check(pins, exact, rmode, sat, debug):
     debug = f"{debug} rmode={rmode} sat={sat} exact={exact} expect={DECODE[expect]} got={DECODE[pins.y]}"
     assert matches(pins.y, expect), debug
     assert pins.strobe == 1, debug
-    assert pins.invalid == 0, debug  # there is no Inf to introduce a NaN
+    assert pins.invalid == 0, debug
     if not isnan(expect):
         assert pins.inexact == int(DECODE[pins.y] != exact), (debug, pins)
     return pins.inexact
 
-## PROTOCOL
+@cocotb.test()
+async def test_opcodes(dut):
+    for name in ("OP_NOP", "OP_LOAD_A_CLR", "OP_LOAD_A", "OP_MAC",
+                 "OP_ADD_CLR", "OP_ADD", "OP_CTRL"):
+        assert int(getattr(dut, name).value) == globals()[name], name
 
 @cocotb.test()
 async def test_reset(dut):
@@ -163,7 +160,6 @@ async def test_multiply(dut):
     assert pins.strobe == 1
     assert flags(pins) == (0, 0, 0), pins
 
-# the worked example in project.v, with a=1, b=2, c=0.5, d=3, e=1
 @cocotb.test()
 async def test_example(dut):
     await start(dut)
@@ -194,8 +190,6 @@ async def test_strobe(dut):
         pins = await issue(dut, op, ONE)
         assert pins.strobe == strobe, (op, pins)
 
-# reserved opcodes must not touch reg_a, the pending clear, the accumulator or
-# CTRL, even with a hostile operand
 @cocotb.test()
 async def test_reserved(dut):
     await start(dut)
@@ -209,11 +203,9 @@ async def test_reserved(dut):
     pins = await issue(dut, OP_MAC, TWO)
     assert pins.y == TWO, DECODE[pins.y]
 
-    # rmode and sat are still the reset defaults
     pins = await mac(dut, MAX, MAX)
     assert isnan(pins.y), DECODE[pins.y]
 
-# only uio_in[3:0] is the opcode
 @cocotb.test()
 async def test_upper_uio_ignored(dut):
     await start(dut)
@@ -223,7 +215,6 @@ async def test_upper_uio_ignored(dut):
     assert DECODE[pins.y] == 4.0, DECODE[pins.y]
     assert pins.strobe == 1
 
-    # and only ui_in[3:0] is the CTRL operand
     pins = await issue(dut, OP_CTRL, 0xF0 | RNE)
     await mac(dut, MAX, MAX)
     pins = await issue(dut, OP_NOP)
@@ -244,7 +235,6 @@ async def test_reg_a_persists(dut):
     pins = await issue(dut, OP_MAC, HALF)
     assert DECODE[pins.y] == 6.0, DECODE[pins.y]
 
-# the pending clear survives NOP, LOAD_A and CTRL, and the last LOAD_A wins
 @cocotb.test()
 async def test_pending_clear(dut):
     await start(dut)
@@ -258,11 +248,9 @@ async def test_pending_clear(dut):
     pins = await issue(dut, OP_MAC, ONE)
     assert pins.y == HALF, DECODE[pins.y]
 
-    # and is consumed by the MAC
     pins = await issue(dut, OP_MAC, ONE)
     assert pins.y == ONE, DECODE[pins.y]
 
-# LOAD_A_CLR a; ADD e is ADD_CLR e, but a is still loaded
 @cocotb.test()
 async def test_load_a_clr_add(dut):
     await start(dut)
@@ -274,7 +262,6 @@ async def test_load_a_clr_add(dut):
     pins = await issue(dut, OP_MAC, ONE)
     assert DECODE[pins.y] == 3.0, DECODE[pins.y]
 
-# ADD_CLR uses 1.0, not reg_a, and clears whatever was pending
 @cocotb.test()
 async def test_add_clr(dut):
     await start(dut)
@@ -290,7 +277,6 @@ async def test_add_clr(dut):
     pins = await issue(dut, OP_ADD, ONE)
     assert DECODE[pins.y] == 3.0, DECODE[pins.y]
 
-# two _CLR in a row discards the first
 @cocotb.test()
 async def test_double_clear(dut):
     await start(dut)
@@ -305,7 +291,6 @@ async def test_double_clear(dut):
     pins = await issue(dut, OP_ADD_CLR, HALF)
     assert pins.y == HALF, DECODE[pins.y]
 
-# CTRL applies retrospectively and persists across accumulations
 @cocotb.test()
 async def test_ctrl_persists(dut):
     await start(dut)
@@ -335,14 +320,12 @@ async def test_reset_restores_defaults(dut):
 
     pins = await mac(dut, MAX, MAX)
     assert isnan(pins.y), DECODE[pins.y]
-    # reg_a was reset, and the accumulator was cleared by the LOAD_A_CLR
+
     await issue(dut, OP_LOAD_A_CLR, ZERO)
     await reset(dut)
     pins = await issue(dut, OP_ADD_CLR, ONE)
     pins = await issue(dut, OP_MAC, MAX)
     assert pins.y == ONE, DECODE[pins.y]
-
-## ARITHMETIC
 
 @cocotb.test()
 async def test_dotproduct(dut):
@@ -355,7 +338,6 @@ async def test_dotproduct(dut):
         assert pins.y == MIN | sign, DECODE[pins.y]
         assert flags(pins) == (0, 0, 0), pins
 
-    # lots of dynamic range
     await issue(dut, OP_LOAD_A_CLR, MAX)
     await issue(dut, OP_MAC, MAX)
     await issue(dut, OP_LOAD_A, MIN)
@@ -370,14 +352,13 @@ async def test_dotproduct(dut):
 async def test_flags(dut):
     await start(dut)
 
-    # inexact
     await mac(dut, ONE, ONE)
     await issue(dut, OP_LOAD_A, MIN)
     pins = await issue(dut, OP_MAC, MIN)
     assert pins.y == ONE
     assert flags(pins) == (1, 0, 0), pins
 
-    # underflow, reconstructed as documented in project.v
+    # underflow
     await issue(dut, OP_LOAD_A_CLR, MIN)
     for _ in range(SUBULP_TIE):
         pins = await issue(dut, OP_MAC, EIGHTH)
@@ -395,8 +376,6 @@ async def test_flags(dut):
     assert isnan(pins.y), DECODE[pins.y]
     assert flags(pins) == (0, 0, 0), pins
 
-# rmode alternates, and is flipped retrospectively on every pair, so each pair
-# is checked under both RNE and RTZ in 3 cycles
 @cocotb.test()
 async def test_mac_sweep(dut):
     await start(dut)
@@ -408,7 +387,7 @@ async def test_mac_sweep(dut):
             exact = product(a, b)
             pins = await mac(dut, a, b)
             inexact += check(pins, exact, rmode, 0, debug)
-            rmode ^= 1
+            rmode = {RNE: RTZ, RTZ: RMM, RMM: RNE}[rmode]
             pins = await ctrl(dut, rmode)
             inexact += check(pins, exact, rmode, 0, debug)
 
@@ -425,13 +404,12 @@ async def test_add_sweep(dut):
             exact = total(a, b)
             pins = await add(dut, a, b)
             inexact += check(pins, exact, rmode, 0, debug)
-            rmode ^= 1
+            rmode = {RNE: RTZ, RTZ: RMM, RMM: RNE}[rmode]
             pins = await ctrl(dut, rmode)
             inexact += check(pins, exact, rmode, 0, debug)
 
     assert inexact > 0
 
-# only the pairs where saturation is observable
 @cocotb.test()
 async def test_sat_sweep(dut):
     await start(dut)
