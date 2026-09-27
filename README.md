@@ -48,10 +48,7 @@ make harden
 Look in `runs/wokwi/` for errors/warnings. Diagnostics are available with
 
 ```
-.venv/bin/python tt/tt_tool.py --print-warnings
-.venv/bin/python tt/tt_tool.py --print-stats
-.venv/bin/python tt/tt_tool.py --print-cell-summary
-.venv/bin/python tt/tt_tool.py --print-cell-category
+make stats
 ```
 
 To render an image try
@@ -66,20 +63,75 @@ and also look under `docs/netlist.svg`
 
 The final output is in `runs/wokwi/final/` (GDS, LEF, netlists).
 
-### Optimisations
+### Timing and Optimisations
 
-TODO perf
+An estimate of maximum clock frequency is `1 / (CLOCK_PERIOD − WNS)`.
 
-Add this to `src/config.json`) to use a faster adder type to trade space for speed:
+`src/config.json` sets `CLOCK_PERIOD: 20` (20 ns, 50 MHz)
+
+`WNS` (worst negative slack) is obtained from looking at the output of `runs/wokwi/*-openroad-stapostpnr/summary.rpt`
+
+The `fmax.py` script will automatically produce reports for each "corner" and at different temperatues
+
+```
+# Routing stats
+
+| Utilisation (%) | Wire length (um) |
+|-------------|------------------|
+| 78.509 % | 54459 |
+python ./fmax.py
+nom_tt_025C_1v80        3.7944 ns   61.71 MHz
+nom_ss_100C_1v60       -7.4748 ns   36.40 MHz
+nom_ff_n40C_1v95        8.4237 ns   86.38 MHz
+min_tt_025C_1v80        3.9201 ns   62.19 MHz
+min_ss_100C_1v60       -7.2305 ns   36.72 MHz
+min_ff_n40C_1v95        8.5358 ns   87.23 MHz
+max_tt_025C_1v80        3.6601 ns   61.20 MHz
+max_ss_100C_1v60       -7.7137 ns   36.08 MHz
+max_ff_n40C_1v95        8.3008 ns   85.48 MHz
+fmax range: 36.08 – 87.23 MHz
+```
+
+We can try to swap out the adder type from the default to `src/config.json`:
 
 ```
 "SYNTH_ADDER_TYPE": "CSA",
 ```
 
-### In Progress
+Here are some numbers with various adder implementationgs (on 1x2)
 
-TODO how do we see our frequency limits?
+- `YOSYS` 38% utilisation, 36.20 – 86.36 MHz
+- `FA` 38% utilisation, 36.20 – 86.36 MHz
+- `RCA` violations, 42% utilisation, 16.53 – 50.08 MHz
+- `CSA` violations, 39% utilisation, 27.15 – 71.53 MHz
 
-TODO use https://gds-explorer.tinytapeout.com/ to render a video
+But looking at our `docs/netlist.svg` we see that the majority of the time is take up by muxing.
 
-TODO can we render to PCB with ICs?
+Either we could think up another way to do this that is more parallelisable, or we could look into pipelining by storing the full state into intermediate registers. This lets us run with a faster clock but means the operation takes more cycles; increasing throughput but having little or no impact on latency.
+
+However, since this project is designed to run on a 1MHz beneater style 8-bit computer, we choose to leave it as it is.
+
+TODO see how much space 16 bits needs (and what the frequency limit then is... presumably much slower)
+
+### Future Work
+
+#### Art
+
+I was too close to the limit to be able to include art in this design, encorporating some easter egg designs in the next one could be feasible https://tinytapeout.com/guides/creating-silicon-art/ / https://github.com/nicoca20/artistic
+
+#### Clock Optimisation
+
+I find it hard to understand what to optimise, besides eyeballing the netlist. There are detailed reports under `runs/wokwi/*-openroad-stapostpnr` that can be analysed to get timings. However, a tool that simply takes the theoretical gate level propagation times and overlays it onto the netlist, while accumulating the time to get there, would be very useful for finding what is best to pipeline.
+
+For this particular design it seems that the `$add` and `$mux` step (taking the initial mult result and shifting it into the input register) would benefit from pipelining the most.
+
+#### FPGA
+
+It would be very useful to be able to target an FPGA, not just for testing but to be able to make use of this design as an actual hardware accelerator allowing very parallel workloads.
+
+#### PCB
+
+It would be a lot of fun to synthesise to a PCB and have it made with 74 series popcorn ICs. That is feasible with the yosys `74xx-liberty` backend, e.g.
+
+https://pepijndevos.nl/2019/07/18/vhdl-to-pcb.html
+

@@ -86,6 +86,13 @@ harden: $(SOURCES) info.yaml src/config.json
 	tt/tt_tool.py --harden
 	tt/tt_tool.py --print-warnings
 
+stats:
+	tt/tt_tool.py --print-cell-summary
+	tt/tt_tool.py --print-cell-category
+	tt/tt_tool.py --print-warnings
+	tt/tt_tool.py --print-stats
+	python ./fmax.py
+
 explore:
 	python -m librelane --dockerized --pdk-root "$(PDK_ROOT)" --pdk sky130A -f SynthesisExploration src/config_merged.json
 
@@ -105,4 +112,4 @@ deps:
 clean:
 	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__ .venv/
 
-.PHONY: all compile synth test test_project harden deps clean
+.PHONY: all compile synth test test_project harden stats deps clean
