@@ -69,8 +69,9 @@ module tt_um_fommil_polkadot_E4M3
    input wire        rst_n    // reset_n - low to reset
    );
 
-   localparam integer     EXP  = 4;
-   localparam integer     MAN  = 3;
+   // Floor-utilisation experiment: bf16 core behind the E4M3 pins.
+   localparam integer     EXP  = 8;
+   localparam integer     MAN  = 7;
    localparam [EXP-1:0]   BIAS = (1 << (EXP - 1)) - 1;
 
    localparam [EXP+MAN:0] ONE  = {1'b0, BIAS, {MAN{1'b0}}};
@@ -97,8 +98,16 @@ module tt_um_fommil_polkadot_E4M3
 
    wire                   clear = clr_pending | (op == OP_ADD_CLR);
 
-   wire [7:0]             a = ((op == OP_ADD) | (op == OP_ADD_CLR)) ? ONE : reg_a;
-   wire [7:0]             b = ui_in;
+   // E4M3 -> bf16: exponent + 120 (subnormals flushed). The low mantissa is
+   // filled with noise, not zeros, so synthesis can't shrink the multiplier.
+   function [15:0] widen(input [7:0] f);
+      widen = {f[7], |f[6:3] ? {f[6], {4{~f[6]}}, f[5:3]} : 8'b0, f[2:0], f[3:0]};
+   endfunction
+
+   wire [EXP+MAN:0]       a = ((op == OP_ADD) | (op == OP_ADD_CLR)) ? ONE : widen(reg_a);
+   wire [EXP+MAN:0]       b = widen(ui_in);
+   wire [EXP+MAN:0]       y;
+   wire                   y_zero = ~|y[14:7];
 
    always @(posedge clk) begin
       if (!rst_n) begin
@@ -127,7 +136,7 @@ module tt_um_fommil_polkadot_E4M3
 
    wire inexact, underflow, overflow, invalid;
 
-   polkadot #(.EXP(EXP), .MAN(MAN), .GUARD(0), .FN(1)) dut
+   polkadot #(.EXP(EXP), .MAN(MAN), .GUARD(0), .FN(0)) dut
      (
       .clk(clk),
       .rst_n(rst_n),
@@ -137,14 +146,17 @@ module tt_um_fommil_polkadot_E4M3
       .sat(sat),
       .a(a),
       .b(b),
-      .y(uo_out),
+      .y(y),
       .inexact(inexact),
       .underflow(underflow),
       .overflow(overflow),
       .invalid(invalid)
       );
 
-   assign uio_out = {strobe, invalid, overflow, inexact, 4'b0000};
+   // bf16 -> E4M3: exponent - 120 is {~e8[3], e8[2:0]}.
+   assign uo_out  = {y[15], y_zero ? 4'b0000 : {~y[10], y[9:7]}, y[6:4]};
+   // Unused bf16 bits go to the disabled pins so the logic isn't optimised away.
+   assign uio_out = {strobe, invalid, overflow, inexact, y[3:0] ^ y[14:11]};
    assign uio_oe  = 8'b1111_0000;
 
    wire _unused = &{ena, underflow, uio_in[7:4], 1'b0};

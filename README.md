@@ -111,9 +111,13 @@ Either we could think up another way to do this that is more parallelisable, or 
 
 However, since this project is designed to run on a 1MHz beneater style 8-bit computer, we choose to leave it as it is.
 
-TODO see how much space 16 bits needs (and what the frequency limit then is... presumably much slower)
+TODO see if adding some guard bits harms our utilisation
 
 ### Future Work
+
+#### 16 bit
+
+Experiments showed that this needed an 8x2 tinytapeout space (i.e. 16x) to fit a bfloat16 build of the `polkadot` module. It would be interesting to actually do that, or at least simulate on an FPGA.
 
 #### Art
 
