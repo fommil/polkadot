@@ -19,6 +19,9 @@ export GPI_USERS := $(shell cocotb-config --libpython);$(shell cocotb-config --p
 # https://raw.githubusercontent.com/TinyTapeout/tt-gds-action/ttsky26d/action.yml
 LIBRELANE_VERSION = 3.0.14
 
+PDK_VERSION = 8afc8346a57fe1ab7934ba5a6056ea8b43078e71
+LIB = $(PDK_ROOT)/ciel/sky130/versions/$(PDK_VERSION)/$(PDK)/libs.ref/sky130_fd_sc_hd/lib/sky130_fd_sc_hd__tt_025C_1v80.lib
+
 # PLUSARGS=+dump for a waveform that can be viewed in gtkwave
 #
 # SWEEP_LIMIT=n caps each pair sweep at about n transactions. The default sweeps
@@ -93,6 +96,7 @@ stats:
 	tt/tt_tool.py --print-stats
 	python ./fmax.py
 
+# this produces a file that lets us pick a value for SYNTH_STRATEGY
 explore:
 	python -m librelane --dockerized --pdk-root "$(PDK_ROOT)" --pdk sky130A -f SynthesisExploration src/config_merged.json
 
@@ -103,6 +107,14 @@ render:
 	convert gds_render.png -resize 1000x render.jpg
 	yowasp-yosys -p "read_verilog src/polkadot.v; prep -top polkadot; show -format svg -prefix docs/netlist"
 	dot -Tsvg 'docs/netlist.dot' > 'docs/netlist.svg.new' && mv 'docs/netlist.svg.new' 'docs/netlist.svg'
+
+# and a more complex rendering with the synthesized gate level
+render_synth:
+# these are just using basic abc settings...
+#	yowasp-yosys -p "read_verilog src/polkadot.v; synth -flatten -top polkadot; opt_clean; show -format svg -prefix docs/netlist_synth"
+#	dot -Tsvg 'docs/netlist_synth.dot' > 'docs/netlist_synth.svg.new' && mv 'docs/netlist_synth.svg.new' 'docs/netlist_toy_synth.svg'
+	yowasp-yosys -p "read_liberty -lib $(LIB); read_verilog runs/wokwi/06-yosys-synthesis/tt_um_fommil_polkadot_E4M3.nl.v; hierarchy -top tt_um_fommil_polkadot_E4M3; show -format dot -prefix docs/netlist_synth tt_um_fommil_polkadot_E4M3"
+	dot -Tsvg 'docs/netlist_synth.dot' > 'docs/netlist_synth.svg.new' && mv 'docs/netlist_synth.svg.new' 'docs/netlist_synth.svg'
 
 deps:
 	git submodule update --init

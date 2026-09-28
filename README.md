@@ -59,7 +59,13 @@ make render
 
 ![rendered image of the circuit](./render.jpg)
 
-and also look under `docs/netlist.svg`
+and also look under `docs/netlist.svg`. To see a gate level netlist, try (slow)
+
+```
+make render_synth
+```
+
+and look in `docs/netlist_synth.svg`.
 
 The final output is in `runs/wokwi/final/` (GDS, LEF, netlists).
 
@@ -71,25 +77,23 @@ An estimate of maximum clock frequency is `1 / (CLOCK_PERIOD − WNS)`.
 
 `WNS` (worst negative slack) is obtained from looking at the output of `runs/wokwi/*-openroad-stapostpnr/summary.rpt`
 
-The `fmax.py` script will automatically produce reports for each "corner" and at different temperatues
+The `fmax.py` script will automatically produce reports for each "corner" and at different temperatues. With an `AREA 3` synth strategy I am just over the limit for 1 tile, so on 1x2:
 
 ```
-# Routing stats
-
 | Utilisation (%) | Wire length (um) |
 |-------------|------------------|
-| 78.509 % | 54459 |
+| 50.527 % | 41907 |
 python ./fmax.py
-nom_tt_025C_1v80        3.7944 ns   61.71 MHz
-nom_ss_100C_1v60       -7.4748 ns   36.40 MHz
-nom_ff_n40C_1v95        8.4237 ns   86.38 MHz
-min_tt_025C_1v80        3.9201 ns   62.19 MHz
-min_ss_100C_1v60       -7.2305 ns   36.72 MHz
-min_ff_n40C_1v95        8.5358 ns   87.23 MHz
-max_tt_025C_1v80        3.6601 ns   61.20 MHz
-max_ss_100C_1v60       -7.7137 ns   36.08 MHz
-max_ff_n40C_1v95        8.3008 ns   85.48 MHz
-fmax range: 36.08 – 87.23 MHz
+nom_tt_025C_1v80        8.3447 ns   85.80 MHz
+nom_ss_100C_1v60        1.5011 ns   54.06 MHz
+nom_ff_n40C_1v95       10.8875 ns  109.74 MHz
+min_tt_025C_1v80        8.4755 ns   86.77 MHz
+min_ss_100C_1v60        1.7148 ns   54.69 MHz
+min_ff_n40C_1v95       10.9775 ns  110.83 MHz
+max_tt_025C_1v80        8.1937 ns   84.70 MHz
+max_ss_100C_1v60        1.2841 ns   53.43 MHz
+max_ff_n40C_1v95       10.7783 ns  108.44 MHz
+fmax range: 53.43 – 110.83 MHz
 ```
 
 We can try to swap out the adder type from the default to `src/config.json`:
@@ -98,7 +102,7 @@ We can try to swap out the adder type from the default to `src/config.json`:
 "SYNTH_ADDER_TYPE": "CSA",
 ```
 
-Here are some numbers with various adder implementationgs (on 1x2)
+Here are some numbers with various adder implementations (using an older version of the `msb` calculation which I later optimised)
 
 - `YOSYS` 38% utilisation, 36.20 – 86.36 MHz
 - `FA` 38% utilisation, 36.20 – 86.36 MHz
@@ -125,7 +129,7 @@ I was too close to the limit to be able to include art in this design, encorpora
 
 I find it hard to understand what to optimise, besides eyeballing the netlist. There are detailed reports under `runs/wokwi/*-openroad-stapostpnr` that can be analysed to get timings. However, a tool that simply takes the theoretical gate level propagation times and overlays it onto the netlist, while accumulating the time to get there, would be very useful for finding what is best to pipeline.
 
-For this particular design it seems that the `$add` and `$mux` step (taking the initial mult result and shifting it into the `term` register) would benefit from either a rethink or pipelining.
+For this particular design it seems that the sequential `$mux` step (taking the initial mult result and shifting it into the `msb` register) would benefit from either a rethink or pipelining.
 
 #### FPGA
 

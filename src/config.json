@@ -13,7 +13,7 @@
 
   "//": "PL_TARGET_DENSITY_PCT - You can increase this if Global Placement fails with error GPL-0302.",
   "//": "Users have reported that values up to 80 worked well for them.",
-  "PL_TARGET_DENSITY_PCT": 80,
+  "PL_TARGET_DENSITY_PCT": 60,
 
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
@@ -35,9 +35,12 @@
   "SYNTH_ADDER_TYPE": "YOSYS",
 
   "//": "timing debugging, courtesy of Essen",
-  "SYNTH_AUTONAME": true,
+  "SYNTH_AUTONAME": false,
   "SYNTH_HIERARCHY_MODE": "keep",
   "ERROR_ON_UNMAPPED_CELLS": false,
+
+  "//": "DELAY = prioritise timing, AREA = prioritise space, see `make explore`",
+  "SYNTH_STRATEGY": "AREA 3",
 
   "//": "Configuration docs: https://librelane.readthedocs.io/en/latest/reference/configuration.html",
 
