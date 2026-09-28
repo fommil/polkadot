@@ -96,7 +96,8 @@ stats:
 explore:
 	python -m librelane --dockerized --pdk-root "$(PDK_ROOT)" --pdk sky130A -f SynthesisExploration src/config_merged.json
 
-# just for fun
+# just for fun, note that the netlist uses the default values in polkadot.v not the
+# values used by project.v
 render:
 	python tt/tt_tool.py --create-svg --create-png
 	convert gds_render.png -resize 1000x render.jpg

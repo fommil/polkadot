@@ -44,8 +44,8 @@ module polkadot
   #(
     parameter integer EXP = 4,   // exponent field bits
     parameter integer MAN = 3,   // significand bits, not including implicit bit
-    parameter integer GUARD = 0,  // headroom: 2**GUARD worst-case terms
-    parameter [0:0] FN = 0       // 0: IEEE-style Inf/NaN, 1: OCP FP8 "fn" style
+    parameter integer GUARD = 1,  // headroom: 2**GUARD worst-case terms
+    parameter [0:0] FN = 1       // 0: IEEE-style Inf/NaN, 1: OCP FP8 "fn" style
     )
    (
     input wire              clk,

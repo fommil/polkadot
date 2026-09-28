@@ -9,3 +9,4 @@ src/user_config.json
 src/config_merged.json
 gds_render*
 *.dot
+*.svg

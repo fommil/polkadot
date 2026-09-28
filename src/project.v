@@ -127,7 +127,7 @@ module tt_um_fommil_polkadot_E4M3
 
    wire inexact, underflow, overflow, invalid;
 
-   polkadot #(.EXP(EXP), .MAN(MAN), .GUARD(0), .FN(1)) dut
+   polkadot #(.EXP(EXP), .MAN(MAN), .GUARD(1), .FN(1)) dut
      (
       .clk(clk),
       .rst_n(rst_n),

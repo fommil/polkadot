@@ -111,13 +111,11 @@ Either we could think up another way to do this that is more parallelisable, or 
 
 However, since this project is designed to run on a 1MHz beneater style 8-bit computer, we choose to leave it as it is.
 
-TODO see if adding some guard bits harms our utilisation
-
 ### Future Work
 
 #### 16 bit
 
-Experiments showed that this needed an 8x2 tinytapeout space (i.e. 16x) to fit a bfloat16 build of the `polkadot` module. It would be interesting to actually do that, or at least simulate on an FPGA.
+Experiments showed that this needed about 10x tinytapeout space to fit a bfloat16 build of the `polkadot` module. It would be interesting to actually do that, or at least simulate on an FPGA.
 
 #### Art
 
@@ -127,7 +125,7 @@ I was too close to the limit to be able to include art in this design, encorpora
 
 I find it hard to understand what to optimise, besides eyeballing the netlist. There are detailed reports under `runs/wokwi/*-openroad-stapostpnr` that can be analysed to get timings. However, a tool that simply takes the theoretical gate level propagation times and overlays it onto the netlist, while accumulating the time to get there, would be very useful for finding what is best to pipeline.
 
-For this particular design it seems that the `$add` and `$mux` step (taking the initial mult result and shifting it into the input register) would benefit from pipelining the most.
+For this particular design it seems that the `$add` and `$mux` step (taking the initial mult result and shifting it into the `term` register) would benefit from either a rethink or pipelining.
 
 #### FPGA
 
