@@ -72,6 +72,8 @@ and look in `docs/netlist_synth.svg`.
 
 The final output is in `runs/wokwi/final/` (GDS, LEF, netlists).
 
+The CI builds a [3d visualisation of the design](https://gds-viewer.tinytapeout.com/?pdk=sky130A&model=https%3A%2F%2Ffommil.com%2Fpolkadot%2F%2Ftinytapeout.oas) !
+
 ### Timing and Optimisations
 
 An estimate of maximum clock frequency is `1 / (CLOCK_PERIOD − WNS)`.
