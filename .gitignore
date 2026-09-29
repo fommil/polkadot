@@ -10,3 +10,4 @@ src/config_merged.json
 gds_render*
 *.dot
 *.svg
+test/gate_level_netlist.v

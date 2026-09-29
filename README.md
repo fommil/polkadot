@@ -27,9 +27,12 @@ There is no attempt to optimise the upper bound on the clock frequency. It may b
 
 ### Developers
 
+The github actions are based on https://github.com/TinyTapeout/ttsky-verilog-template
+
 To get setup you must have `python3`, `iverilog`, `verilator` and `docker` installed. To install local dependencies
 
 ```
+git submodule update --init
 make deps
 ```
 

@@ -1,4 +1,7 @@
 SOURCES = $(wildcard src/*.v)
+GL_NETLIST ?= test/gate_level_netlist.v
+GL_RUNS_NETLIST = runs/wokwi/final/pnl/tt_um_fommil_polkadot_E4M3.pnl.v
+GL_CELLS = $(PDK_ROOT)/ciel/sky130/versions/$(PDK_VERSION)/$(PDK)/libs.ref/sky130_fd_sc_hd/verilog
 
 # provide your own PDK_ROOT if you already have one from another project
 export PDK_ROOT ?= $(HOME)/.ciel
@@ -12,8 +15,8 @@ export NO_COLOR=1
 COCOTB_LOG_LEVEL ?= INFO
 GPI_LOG_LEVEL ?= WARNING
 export COCOTB_LOG_LEVEL GPI_LOG_LEVEL
-export PYGPI_PYTHON_BIN := $(shell cocotb-config --python-bin)
-export GPI_USERS := $(shell cocotb-config --libpython);$(shell cocotb-config --pygpi-entry-point)
+export PYGPI_PYTHON_BIN := $(shell PATH="$(PATH)" cocotb-config --python-bin)
+export GPI_USERS := $(shell PATH="$(PATH)" cocotb-config --libpython);$(shell PATH="$(PATH)" cocotb-config --pygpi-entry-point)
 
 # match the version of librelane to the shuttle...
 # https://raw.githubusercontent.com/TinyTapeout/tt-gds-action/ttsky26d/action.yml
@@ -28,8 +31,6 @@ LIB = $(PDK_ROOT)/ciel/sky130/versions/$(PDK_VERSION)/$(PDK)/libs.ref/sky130_fd_
 #               the 8 bit formats exhaustively and samples the wider ones.
 #               SWEEP_LIMIT=500 is a fast smoke test, larger values buy
 #               coverage; exhausting E5M10 would need 2^32 per sweep, i.e. days.
-
-all: compile synth test
 
 # polkadot_EXP_MAN_FN_GUARD configurations to test.
 #
@@ -61,7 +62,7 @@ synth: $(SOURCES)
 .PRECIOUS: polkadot_%.vvp
 
 # polkadot_EXP_MAN_FN_GUARD.vvp
-polkadot_%.vvp: $(SOURCES) $(wildcard test/*.v)
+polkadot_%.vvp: $(SOURCES) $(filter-out $(GL_NETLIST),$(wildcard test/*.v))
 	iverilog -o $@ -s polkadot -s dump -g2012 \
 	  -Ppolkadot.EXP=$(word 1,$(subst _, ,$*)) \
 	  -Ppolkadot.MAN=$(word 2,$(subst _, ,$*)) \
@@ -84,9 +85,24 @@ test_project: project.vvp test/test_project.py
 	COCOTB_TEST_MODULES=test_project $(VVP) $< $(PLUSARGS)
 	python -m cocotb_tools.check_results results.xml
 
+$(GL_NETLIST): $(wildcard $(GL_RUNS_NETLIST))
+	@test -f $(GL_RUNS_NETLIST) || { echo "$(GL_RUNS_NETLIST) not found: run 'make harden' first" >&2; exit 1; }
+	cp $(GL_RUNS_NETLIST) $@
+
+project_gl.vvp: $(GL_NETLIST) test/dump_project.v
+	iverilog -o $@ -s tt_um_fommil_polkadot_E4M3 -s dump_project -g2012 \
+	  -DGL_TEST -DFUNCTIONAL -DUSE_POWER_PINS -DSIM -DUNIT_DELAY=\#1 \
+	  $(GL_CELLS)/primitives.v $(GL_CELLS)/sky130_fd_sc_hd.v $^
+
+test_gds: project_gl.vvp test/test_project.py
+	@rm -f results.xml
+	COCOTB_TEST_MODULES=test_project $(VVP) $< $(PLUSARGS)
+	python -m cocotb_tools.check_results results.xml
+
 harden: $(SOURCES) info.yaml src/config.json
 	tt/tt_tool.py --create-user-config
 	tt/tt_tool.py --harden
+	cp $(GL_RUNS_NETLIST) $(GL_NETLIST)
 	tt/tt_tool.py --print-warnings
 
 stats:
@@ -117,7 +133,6 @@ render_synth:
 	dot -Tsvg 'docs/netlist_synth.dot' > 'docs/netlist_synth.svg.new' && mv 'docs/netlist_synth.svg.new' 'docs/netlist_synth.svg'
 
 deps:
-	git submodule update --init
 	python3 -m venv .venv
 	.venv/bin/pip install -r tt/requirements.txt cocotb pytest librelane==$(LIBRELANE_VERSION)
 	.venv/bin/pip install --no-deps 'ml_dtypes>=0.5,<0.6' # otherwise we get 0.4
@@ -125,4 +140,4 @@ deps:
 clean:
 	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__ .venv/
 
-.PHONY: all compile synth test test_project harden stats deps clean
+.PHONY: compile synth test test_project test_gds harden stats deps clean

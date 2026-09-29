@@ -92,10 +92,9 @@ async def issue(dut, op, byte=0):
     dut.uio_in.value = op
     dut.ui_in.value = byte
     await RisingEdge(dut.clk)
-    await ReadOnly()
+    await FallingEdge(dut.clk)
     y = int(dut.uo_out.value)
     out = int(dut.uio_out.value)
-    await FallingEdge(dut.clk)
     return Pins(y, (out >> 7) & 1, (out >> 4) & 1, (out >> 5) & 1, (out >> 6) & 1)
 
 def flags(pins):
@@ -111,6 +110,9 @@ async def reset(dut):
     dut.rst_n.value = 1
 
 async def start(dut):
+    if hasattr(dut, "VPWR"):
+        dut.VPWR.value = 1
+        dut.VGND.value = 0
     Clock(dut.clk, 10, unit="ns").start()
     dut.ena.value = 1
     await reset(dut)
@@ -138,6 +140,8 @@ def check(pins, exact, rmode, sat, debug):
 
 @cocotb.test()
 async def test_opcodes(dut):
+    if hasattr(dut, "VPWR"):
+        return
     for name in ("OP_NOP", "OP_LOAD_A_CLR", "OP_LOAD_A", "OP_MAC",
                  "OP_ADD_CLR", "OP_ADD", "OP_CTRL"):
         assert int(getattr(dut, name).value) == globals()[name], name

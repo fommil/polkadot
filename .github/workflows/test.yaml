@@ -1,0 +1,40 @@
+name: test
+on: [push, workflow_dispatch]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install iverilog
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y iverilog
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install Python packages
+        shell: bash
+        run: make deps
+
+      - name: Run tests
+        run: SWEEP_LIMIT=500 make test
+
+      - name: Test Summary
+        uses: test-summary/action@v2.4
+        with:
+          paths: "results.xml"
+        if: always()
+
+      - name: upload waveform and test results
+        if: success() || failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results
+          path: |
+            results.xml
