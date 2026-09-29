@@ -13,7 +13,7 @@
 
   "//": "PL_TARGET_DENSITY_PCT - You can increase this if Global Placement fails with error GPL-0302.",
   "//": "Users have reported that values up to 80 worked well for them.",
-  "PL_TARGET_DENSITY_PCT": 60,
+  "PL_TARGET_DENSITY_PCT": 80,
 
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
@@ -41,6 +41,18 @@
 
   "//": "DELAY = prioritise timing, AREA = prioritise space, see `make explore`",
   "SYNTH_STRATEGY": "AREA 3",
+
+  "//": "Silicon art",
+  "MACROS": {
+    "art": {
+      "gds": ["dir::../art.gds"],
+      "lef": ["dir::../art.lef"],
+      "instances": { "art_inst": { "location": [102.90, 5.00], "orientation": "N" } }
+    }
+  },
+  "FP_MACRO_HORIZONTAL_HALO": 0,
+  "IGNORE_DISCONNECTED_MODULES": ["art"],
+  "ERROR_ON_DISCONNECTED_PINS": false,
 
   "//": "Configuration docs: https://librelane.readthedocs.io/en/latest/reference/configuration.html",
 

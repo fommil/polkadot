@@ -89,7 +89,7 @@ $(GL_NETLIST): $(wildcard $(GL_RUNS_NETLIST))
 	@test -f $(GL_RUNS_NETLIST) || { echo "$(GL_RUNS_NETLIST) not found: run 'make harden' first" >&2; exit 1; }
 	cp $(GL_RUNS_NETLIST) $@
 
-project_gl.vvp: $(GL_NETLIST) test/dump_project.v
+project_gl.vvp: $(GL_NETLIST) art.v test/dump_project.v
 	iverilog -o $@ -s tt_um_fommil_polkadot_E4M3 -s dump_project -g2012 \
 	  -DGL_TEST -DFUNCTIONAL -DUSE_POWER_PINS -DSIM -DUNIT_DELAY=\#1 \
 	  $(GL_CELLS)/primitives.v $(GL_CELLS)/sky130_fd_sc_hd.v $^
@@ -104,6 +104,14 @@ harden: $(SOURCES) info.yaml src/config.json
 	tt/tt_tool.py --harden
 	cp $(GL_RUNS_NETLIST) $(GL_NETLIST)
 	tt/tt_tool.py --print-warnings
+	python tt/tt_tool.py --create-svg --create-png
+	convert gds_render.png -resize 1000x render.jpg
+
+pin_check:
+	cd tt/precheck && python -c 'import logging; logging.basicConfig(level=logging.INFO); \
+	  from pin_check import pin_check; R="$(CURDIR)/runs/wokwi/final"; \
+	  pin_check(f"{R}/gds/tt_um_fommil_polkadot_E4M3.gds", f"{R}/lef/tt_um_fommil_polkadot_E4M3.lef", \
+	  "../tech/$(PDK)/def/tt_block_1x2_pg.def", "tt_um_fommil_polkadot_E4M3", False, "$(PDK)")'
 
 stats:
 	tt/tt_tool.py --print-cell-summary
@@ -117,16 +125,10 @@ explore:
 	python -m librelane --dockerized --pdk-root "$(PDK_ROOT)" --pdk sky130A -f SynthesisExploration src/config_merged.json
 
 # just for fun, note that the netlist uses the default values in polkadot.v not the
-# values used by project.v
-render:
-	python tt/tt_tool.py --create-svg --create-png
-	convert gds_render.png -resize 1000x render.jpg
+# values used by project.v and a more complex rendering with the synthesized gate level
+netlist:
 	yowasp-yosys -p "read_verilog src/polkadot.v; prep -top polkadot; show -format svg -prefix docs/netlist"
 	dot -Tsvg 'docs/netlist.dot' > 'docs/netlist.svg.new' && mv 'docs/netlist.svg.new' 'docs/netlist.svg'
-
-# and a more complex rendering with the synthesized gate level
-render_synth:
-# these are just using basic abc settings...
 #	yowasp-yosys -p "read_verilog src/polkadot.v; synth -flatten -top polkadot; opt_clean; show -format svg -prefix docs/netlist_synth"
 #	dot -Tsvg 'docs/netlist_synth.dot' > 'docs/netlist_synth.svg.new' && mv 'docs/netlist_synth.svg.new' 'docs/netlist_toy_synth.svg'
 	yowasp-yosys -p "read_liberty -lib $(LIB); read_verilog runs/wokwi/06-yosys-synthesis/tt_um_fommil_polkadot_E4M3.nl.v; hierarchy -top tt_um_fommil_polkadot_E4M3; show -format dot -prefix docs/netlist_synth tt_um_fommil_polkadot_E4M3"
@@ -140,4 +142,4 @@ deps:
 clean:
 	rm -rf *.vcd *.vvp *.json results.xml sim_build test/__pycache__ .venv/
 
-.PHONY: compile synth test test_project test_gds harden stats deps clean
+.PHONY: compile synth test test_project test_gds harden pin_check stats deps clean

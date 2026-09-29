@@ -149,6 +149,12 @@ module tt_um_fommil_polkadot_E4M3
 
    wire _unused = &{ena, underflow, uio_in[7:4], 1'b0};
 
+   (* keep *) art art_inst ();
+
+endmodule
+
+(* blackbox *) (* keep *)
+module art ();
 endmodule
 
 `default_nettype wire

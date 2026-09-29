@@ -111,15 +111,17 @@ But looking at our `docs/netlist.svg` we see that the majority of the time is ta
 
 However, since this project is designed to run on a 1MHz beneater style 8-bit computer, and tinytapeout is already limited to 50MHz I/O, we choose to leave it as it is.
 
+### Art
+
+I have included the ascii `art.txt` in the design, for fun, as per [this guide](https://tinytapeout.com/guides/creating-silicon-art/). I run `gen_art.py` to generate the `.lef` / `.gds` files.
+
+A pixel rule we must follow is that two `#` pixels that touch diagonally must also share an edge through a third `#`. So any diagonal step also needs a pixel filled beside it.
+
 ### Future Work
 
 #### 16 bit
 
 Experiments showed that this needed about 10x tinytapeout space to fit a bfloat16 build of the `polkadot` module. It would be interesting to actually do that, or at least simulate on an FPGA.
-
-#### Art
-
-I was too close to the limit to be able to include art in this design, encorporating some easter egg designs in the next one could be feasible https://tinytapeout.com/guides/creating-silicon-art/ / https://github.com/nicoca20/artistic
 
 #### Clock Optimisation
 
@@ -136,4 +138,3 @@ It would be very useful to be able to target an FPGA, not just for testing but t
 It would be a lot of fun to synthesise to a PCB and have it made with 74 series popcorn ICs. That is feasible with the yosys `74xx-liberty` backend, e.g.
 
 https://pepijndevos.nl/2019/07/18/vhdl-to-pcb.html
-
