@@ -87,38 +87,29 @@ The `fmax.py` script will automatically produce reports for each "corner" and at
 ```
 | Utilisation (%) | Wire length (um) |
 |-------------|------------------|
-| 50.527 % | 41907 |
+| 46.766 % | 39625 |
 python ./fmax.py
-nom_tt_025C_1v80        8.3447 ns   85.80 MHz
-nom_ss_100C_1v60        1.5011 ns   54.06 MHz
-nom_ff_n40C_1v95       10.8875 ns  109.74 MHz
-min_tt_025C_1v80        8.4755 ns   86.77 MHz
-min_ss_100C_1v60        1.7148 ns   54.69 MHz
-min_ff_n40C_1v95       10.9775 ns  110.83 MHz
-max_tt_025C_1v80        8.1937 ns   84.70 MHz
-max_ss_100C_1v60        1.2841 ns   53.43 MHz
-max_ff_n40C_1v95       10.7783 ns  108.44 MHz
-fmax range: 53.43 – 110.83 MHz
+nom_tt_025C_1v80        8.5040 ns   86.99 MHz
+nom_ss_100C_1v60        2.0258 ns   55.64 MHz
+nom_ff_n40C_1v95       11.0136 ns  111.28 MHz
+min_tt_025C_1v80        8.6315 ns   87.96 MHz
+min_ss_100C_1v60        2.2470 ns   56.33 MHz
+min_ff_n40C_1v95       11.0983 ns  112.34 MHz
+max_tt_025C_1v80        8.3547 ns   85.87 MHz
+max_ss_100C_1v60        1.7771 ns   54.88 MHz
+max_ff_n40C_1v95       10.9086 ns  109.99 MHz
+fmax range: 54.88 – 112.34 MHz
 ```
 
-We can try to swap out the adder type from the default to `src/config.json`:
+We can try to swap out the `SYNTH_ADDER_TYPE` in `src/config.json`. Here are some numbers with various adder implementations
 
-```
-"SYNTH_ADDER_TYPE": "CSA",
-```
-
-Here are some numbers with various adder implementations (using an older version of the `msb` calculation which I later optimised)
-
-- `YOSYS` 38% utilisation, 36.20 – 86.36 MHz
-- `FA` 38% utilisation, 36.20 – 86.36 MHz
-- `RCA` violations, 42% utilisation, 16.53 – 50.08 MHz
-- `CSA` violations, 39% utilisation, 27.15 – 71.53 MHz
+- `FA` 47% utilisation, 54.88 – 112.34 MHz
+- `RCA` violations, 49% utilisation, 17.62 – 52.45 MHz
+- `CSA` 50% utilisation, 39.09 – 91.74 MHz
 
 But looking at our `docs/netlist.svg` we see that the majority of the time is take up by muxing.
 
-Either we could think up another way to do this that is more parallelisable, or we could look into pipelining by storing the full state into intermediate registers. This lets us run with a faster clock but means the operation takes more cycles; increasing throughput but having little or no impact on latency.
-
-However, since this project is designed to run on a 1MHz beneater style 8-bit computer, we choose to leave it as it is.
+However, since this project is designed to run on a 1MHz beneater style 8-bit computer, and tinytapeout is already limited to 50MHz I/O, we choose to leave it as it is.
 
 ### Future Work
 

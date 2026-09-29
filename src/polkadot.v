@@ -253,26 +253,11 @@ module polkadot
    //
    // which is then converted into gate logic and synthesized thanks to
    // McCluskey et al.
-   //
-   // Each bit of the one-hot is independent of the others (a reduction OR of
-   // everything above it), and the index is then an OR of the one-hot bits,
-   // which is associative so synthesis can balance it into a tree instead of
-   // the priority mux chain.
-   wire [ACC_W-1:0]        oh;
-   genvar                  g;
-   generate
-      for (g = 0; g < ACC_W; g = g + 1) begin : g_oh
-         if (g < NORM_LSB) assign oh[g] = 1'b0;
-         else if (g == ACC_W - 1) assign oh[g] = amag[g];
-         else assign oh[g] = amag[g] & ~|amag[ACC_W-1:g+1];
-      end
-   endgenerate
-
    reg [MSB_W-1:0]         msb;
    integer                 i;
    always @* begin
       msb = {MSB_W{1'b0}};
-      for (i = NORM_LSB; i < ACC_W; i = i + 1) msb = msb | ({MSB_W{oh[i]}} & i[MSB_W-1:0]);
+      for (i = NORM_LSB; i < ACC_W; i = i + 1) if (amag[i]) msb = i[MSB_W-1:0];
    end
 
    // truncate the exact form into MAN width

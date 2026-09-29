@@ -31,7 +31,7 @@
   "//": "https://tinytapeout.com/faq/#how-can-i-map-an-additional-external-clock-to-one-of-the-gpios",
   "CLOCK_PORT": "clk",
 
-  "//": "custom adder, the default is YOSYS",
+  "//": "custom adder {YOSYS, FA, RCA, CSA}",
   "SYNTH_ADDER_TYPE": "YOSYS",
 
   "//": "timing debugging, courtesy of Essen",
