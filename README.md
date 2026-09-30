@@ -21,7 +21,7 @@ This component could be duplicated (many times) as part of a larger design in a 
 
 ### Design
 
-The [Handbook of Floating-Point Arithmetic](https://link.springer.com/book/10.1007/978-3-319-76526-6) (Muller et al) gives a description of a typical hardware floating point MULT and ADD. Bizarrely, a fixed point accumulating multiply is simpler than a rounded one, since we do not need to consider the case when the numbers are at a different scale. Instead, we simply expand every number into its exact representation (38 bits for the E4M3 tapeout, and several kilobits for double precision floating point numbers) and perform integer ADD and MULT on an accumulator. Multi-layer cache solutions have been proposed [by Koenig](http://www2.eecs.berkeley.edu/Pubs/TechRpts/2018/EECS-2018-51.html) for the higher precision bits, but this implementation just keeps it simple by using internal registers, so it's quite big.
+The [Handbook of Floating-Point Arithmetic](https://link.springer.com/book/10.1007/978-3-319-76526-6) (Muller et al) gives a description of a typical hardware floating point MULT and ADD. Bizarrely, a fixed point accumulating multiply is simpler than a rounded one, since we do not need to consider the case when the numbers are at a different scale. Instead, we simply expand every number into its exact representation (37 bits for the E4M3 tapeout plus 4 guard bits, and several kilobits for double precision floating point numbers) and perform integer ADD and MULT on an accumulator. Multi-layer cache solutions have been proposed [by Koenig](http://www2.eecs.berkeley.edu/Pubs/TechRpts/2018/EECS-2018-51.html) for the higher precision bits, but this implementation just keeps it simple by using internal registers, so it's quite big.
 
 There is no attempt to optimise the upper bound on the clock frequency. It may be possible to redesign the phases of this computation such that answers are available several clock cycles after the inputs are provided, in order to consume more inputs within the same amount of time.
 
@@ -81,18 +81,18 @@ The `fmax.py` script will automatically produce reports for each "corner" and at
 ```
 | Utilisation (%) | Wire length (um) |
 |-------------|------------------|
-| 46.766 % | 39625 |
+| 51.153 % | 41875 |
 python ./fmax.py
-nom_tt_025C_1v80        8.5040 ns   86.99 MHz
-nom_ss_100C_1v60        2.0258 ns   55.64 MHz
-nom_ff_n40C_1v95       11.0136 ns  111.28 MHz
-min_tt_025C_1v80        8.6315 ns   87.96 MHz
-min_ss_100C_1v60        2.2470 ns   56.33 MHz
-min_ff_n40C_1v95       11.0983 ns  112.34 MHz
-max_tt_025C_1v80        8.3547 ns   85.87 MHz
-max_ss_100C_1v60        1.7771 ns   54.88 MHz
-max_ff_n40C_1v95       10.9086 ns  109.99 MHz
-fmax range: 54.88 – 112.34 MHz
+nom_tt_025C_1v80        8.3598 ns   85.91 MHz
+nom_ss_100C_1v60        1.6509 ns   54.50 MHz
+nom_ff_n40C_1v95       10.9450 ns  110.44 MHz
+min_tt_025C_1v80        8.4949 ns   86.92 MHz
+min_ss_100C_1v60        1.8738 ns   55.17 MHz
+min_ff_n40C_1v95       11.0394 ns  111.60 MHz
+max_tt_025C_1v80        8.2200 ns   84.89 MHz
+max_ss_100C_1v60        1.4108 ns   53.79 MHz
+max_ff_n40C_1v95       10.8439 ns  109.22 MHz
+fmax range: 53.79 – 111.60 MHz
 ```
 
 We can try to swap out the `SYNTH_ADDER_TYPE` in `src/config.json`. Here are some numbers with various adder implementations

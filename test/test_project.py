@@ -356,6 +356,31 @@ async def test_dotproduct(dut):
     assert flags(pins) == (0, 0, 0), pins
 
 @cocotb.test()
+async def test_guard(dut):
+    await start(dut)
+
+    async def cancel(n):
+        await issue(dut, OP_ADD_CLR, ONE)
+        await issue(dut, OP_LOAD_A, MAX)
+        for _ in range(n):
+            await issue(dut, OP_MAC, MAX)
+        await issue(dut, OP_LOAD_A, MAX | NEG)
+        for _ in range(n):
+            pins = await issue(dut, OP_MAC, MAX)
+        return pins
+
+    # GUARD=4 promises 2**4 worst-case terms
+    pins = await cancel(1 << 4)
+    assert pins.y == ONE, DECODE[pins.y]
+    assert flags(pins) == (0, 0, 0), pins
+
+    # the accumulator wraps on the 21st MAX*MAX and comes back to exactly ONE,
+    # but the wrap is sticky
+    pins = await cancel(1 << 5)
+    assert isnan(pins.y), DECODE[pins.y]
+    assert flags(pins) == (1, 1, 0), pins
+
+@cocotb.test()
 async def test_flags(dut):
     await start(dut)
 
