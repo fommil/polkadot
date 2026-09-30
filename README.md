@@ -1,4 +1,4 @@
-The primary usecase for this project is to create hardware LLM accelerators (and other uses of large scale matrix multiplication).
+The primary usecase for this project is to have fun building a microchip by creating a hardware LLM accelerator (matrix multiplication).
 
 For an overview of the process for making a microchip see [Designing Silicon from Scratch by Breaking Taps](https://youtu.be/q6ytRHaTEXI) and consider doing the [Zero to ASIC course](https://www.zerotoasiccourse.com/) (like I did).
 
