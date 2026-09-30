@@ -21,7 +21,7 @@ This component could be duplicated (many times) as part of a larger design in a 
 
 ### Design
 
-The [Handbook of Floating-Point Arithmetic](https://link.springer.com/book/10.1007/978-3-319-76526-6) (Muller et al) gives a description of a typical hardware floating point MULT and ADD. Bizarrely, a fixed point accumulating multiply is simpler than a rounded one, since we do not need to consider the case when the numbers are at a different scale. Instead, we simply expand every number into its exact representation (roughly 64 bits for 8 bit floating point inputs, and several kilobits for double precision floating point numbers) and perform integer ADD and MULT on an aggregator. Multi-layer cache solutions have been proposed [by Koenig](http://www2.eecs.berkeley.edu/Pubs/TechRpts/2018/EECS-2018-51.html) for the higher precision bits, but this implementation just keeps it simple by using internal registers, so it's quite big.
+The [Handbook of Floating-Point Arithmetic](https://link.springer.com/book/10.1007/978-3-319-76526-6) (Muller et al) gives a description of a typical hardware floating point MULT and ADD. Bizarrely, a fixed point accumulating multiply is simpler than a rounded one, since we do not need to consider the case when the numbers are at a different scale. Instead, we simply expand every number into its exact representation (38 bits for the E4M3 tapeout, and several kilobits for double precision floating point numbers) and perform integer ADD and MULT on an accumulator. Multi-layer cache solutions have been proposed [by Koenig](http://www2.eecs.berkeley.edu/Pubs/TechRpts/2018/EECS-2018-51.html) for the higher precision bits, but this implementation just keeps it simple by using internal registers, so it's quite big.
 
 There is no attempt to optimise the upper bound on the clock frequency. It may be possible to redesign the phases of this computation such that answers are available several clock cycles after the inputs are provided, in order to consume more inputs within the same amount of time.
 
@@ -54,21 +54,15 @@ Look in `runs/wokwi/` for errors/warnings. Diagnostics are available with
 make stats
 ```
 
-To render an image try
-
-```
-make render
-```
+`make harden` also renders an image to `render.jpg`
 
 ![rendered image of the circuit](./render.jpg)
 
-and also look under `docs/netlist.svg`. To see a gate level netlist, try (slow)
+To render the RTL netlist (`docs/netlist.svg`) and, after `make harden`, the gate level netlist (`docs/netlist_synth.svg`), try (slow)
 
 ```
-make render_synth
+make netlist
 ```
-
-and look in `docs/netlist_synth.svg`.
 
 The final output is in `runs/wokwi/final/` (GDS, LEF, netlists).
 
@@ -76,11 +70,11 @@ The CI builds a [3d visualisation of the design](https://gds-viewer.tinytapeout.
 
 ### Timing and Optimisations
 
-An estimate of maximum clock frequency is `1 / (CLOCK_PERIOD − WNS)`.
+An estimate of maximum clock frequency is `1 / (CLOCK_PERIOD − WS)`.
 
 `src/config.json` sets `CLOCK_PERIOD: 20` (20 ns, 50 MHz)
 
-`WNS` (worst negative slack) is obtained from looking at the output of `runs/wokwi/*-openroad-stapostpnr/summary.rpt`
+`WS` (setup worst slack) is obtained from looking at the output of `runs/wokwi/*-openroad-stapostpnr/summary.rpt`
 
 The `fmax.py` script will automatically produce reports for each "corner" and at different temperatues. With an `AREA 3` synth strategy I am just over the limit for 1 tile, so on 1x2:
 
@@ -127,7 +121,7 @@ Experiments showed that this needed about 10x tinytapeout space to fit a bfloat1
 
 I find it hard to understand what to optimise, besides eyeballing the netlist. There are detailed reports under `runs/wokwi/*-openroad-stapostpnr` that can be analysed to get timings. However, a tool that simply takes the theoretical gate level propagation times and overlays it onto the netlist, while accumulating the time to get there, would be very useful for finding what is best to pipeline.
 
-For this particular design it seems that the sequential `$mux` step (taking the initial mult result and shifting it into the `msb` register) would benefit from either a rethink or pipelining.
+For this particular design it seems that the chain of `$mux` cells from the leading-one search (computing `msb` from the accumulator, which is combinational, not a register) would benefit from either a rethink or pipelining.
 
 #### FPGA
 

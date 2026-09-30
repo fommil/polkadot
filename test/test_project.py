@@ -183,6 +183,9 @@ async def test_example(dut):
     assert (DECODE[pins.y], pins.strobe) == (4.5, 1), pins
     assert flags(pins) == (0, 0, 0), pins
 
+## The remaining tests are for the error flags and were automated with Claude
+## Opus. They are pretty repetitive and laborious...
+
 @cocotb.test()
 async def test_strobe(dut):
     await start(dut)

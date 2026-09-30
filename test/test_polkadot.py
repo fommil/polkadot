@@ -511,6 +511,9 @@ async def test_dotproduct(dut):
     assert dut.y.value == MIN, DECODE[dut.y.value]
     assert flags(dut) == (0, 0, 0, 0), flags(dut)
 
+## The remaining tests are for the error flags and were automated with Claude
+## Opus. They are pretty repetitive and laborious...
+
 @test()
 async def test_flags_inexact(dut):
     await start(dut)
